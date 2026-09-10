@@ -929,6 +929,46 @@ impl YamcsClient {
     }
 
     #[cfg(feature = "websocket")]
+    /// Subscribe to raw packets
+    ///
+    /// Returns a channel receiver that yields raw packets (base64-encoded binary, plus
+    /// generation/reception times, packet name and size). The subscription is automatically
+    /// cancelled when the receiver is dropped.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use yamcs_http::{YamcsClient, types::monitoring::SubscribePacketsRequest};
+    /// # async fn example(client: &YamcsClient) -> Result<(), Box<dyn std::error::Error>> {
+    /// let request = SubscribePacketsRequest {
+    ///     instance: "myinstance".to_string(),
+    ///     processor: Some("realtime".to_string()),
+    ///     stream: None,
+    /// };
+    /// let mut rx = client.subscribe_packets(&request).await?;
+    /// while let Some(packet) = rx.recv().await {
+    ///     println!("Packet: {:?}", packet);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn subscribe_packets(
+        &self,
+        request: &crate::types::monitoring::SubscribePacketsRequest,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::types::monitoring::Packet>> {
+        let ws = self.ws_client.lock().await;
+        if let Some(client) = ws.as_ref() {
+            client
+                .subscribe("packets", serde_json::to_value(request)?)
+                .await
+        } else {
+            Err(crate::error::YamcsError::WebSocket(
+                "WebSocket client not initialized".to_string(),
+            ))
+        }
+    }
+
+    #[cfg(feature = "websocket")]
     /// Subscribe to events
     ///
     /// Returns a channel receiver that yields events. The subscription is

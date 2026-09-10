@@ -285,6 +285,17 @@ pub enum ReplayState {
     Paused,
 }
 
+/// Request to subscribe to raw packet updates
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribePacketsRequest {
+    pub instance: String,
+    /// Either `processor` or `stream` should be set, not both.
+    pub processor: Option<String>,
+    pub stream: Option<String>,
+}
+
 /// Options for querying packets
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -312,16 +323,26 @@ pub struct ListPacketsResponse {
 }
 
 /// Packet information
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Packet {
-    pub id: NamedObjectId,
+    #[serde(default)]
+    pub id: Option<NamedObjectId>,
+    #[serde(default)]
     pub reception_time: String,
+    #[serde(default)]
     pub earth_reception_time: String,
+    #[serde(default)]
     pub generation_time: String,
+    #[serde(default)]
     pub sequence_number: u32,
+    /// Base64-encoded raw packet bytes.
+    #[serde(default)]
     pub packet: String,
+    #[serde(default)]
     pub size: u32,
+    #[serde(default)]
     pub link: String,
 }
 
@@ -525,5 +546,16 @@ mod tests {
         assert_eq!(data.values.len(), 1);
         assert_eq!(data.values[0].numeric_id, 42);
         assert!(data.values[0].id.is_none());
+    }
+
+    /// Raw packet subscription messages carry base64-encoded binary plus metadata; missing
+    /// fields should not fail deserialization.
+    #[test]
+    fn packet_deserializes_with_missing_optional_fields() {
+        let json = r#"{"packet": "AAECAw==", "size": 4}"#;
+        let packet: Packet = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(packet.packet, "AAECAw==");
+        assert_eq!(packet.size, 4);
+        assert!(packet.id.is_none());
     }
 }
