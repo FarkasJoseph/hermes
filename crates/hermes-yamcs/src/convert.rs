@@ -3,6 +3,7 @@ use hermes_pb::*;
 use prost_types::Timestamp;
 use std::collections::HashMap;
 use tonic::Status;
+use tracing::debug;
 
 /// Convert Hermes CommandValue to YAMCS IssueCommandOptions
 pub fn command_value_to_yamcs(
@@ -156,8 +157,15 @@ pub fn yamcs_param_to_hermes(
     param: &yamcs_http::types::monitoring::ParameterValue,
     filter: &BusFilter,
 ) -> Result<Option<SourcedTelemetry>, Status> {
-    // Build full parameter name
-    let param_name = param.id.name.clone();
+    // Resolve parameter name: prefer id.name if present, otherwise skip (numeric_id will be resolved by caller)
+    let param_name = match &param.id {
+        Some(id) => id.name.clone(),
+        None => {
+            // Numeric ID without a name mapping — skip this value
+            debug!(numeric_id = param.numeric_id, "Skipping parameter value with unresolved numeric_id");
+            return Ok(None);
+        }
+    };
 
     // Apply name filter
     if !filter.names.is_empty()
@@ -170,19 +178,26 @@ pub fn yamcs_param_to_hermes(
     // Parse generation time
     let time = parse_yamcs_time(&param.generation_time)?;
 
-    // Convert YAMCS value to Hermes value
-    let value = yamcs_value_to_hermes(&param.eng_value)?;
+    // Convert YAMCS value to Hermes value (prefer eng_value, fall back to raw_value)
+    let value = if let Some(eng_val) = &param.eng_value {
+        yamcs_value_to_hermes(eng_val)?
+    } else if let Some(raw_val) = &param.raw_value {
+        yamcs_value_to_hermes(raw_val)?
+    } else {
+        // No value available; skip this parameter
+        debug!(numeric_id = param.numeric_id, "Skipping parameter with no value");
+        return Ok(None);
+    };
 
-    // Build telemetry reference
-    // let telem_ref = TelemetryRef {
-    //     instance_id: String::new(), // TODO: populate from YAMCS instance
-    //     qualified_name: param_name.clone(),
-    // };
+    // Extract component and name from qualified name
+    // YAMCS qualified names are typically "/component/name" or "/parent/component/name"
+    // Split on "/" and use the last part as name, parent as component
+    let (component, name) = split_qualified_name(&param_name);
 
     let telem_ref = TelemetryRef {
         id: 0,
-        name: "".to_string(),
-        component: "".to_string(),
+        name,
+        component,
         dictionary: "".to_string(),
     };
 
@@ -200,6 +215,20 @@ pub fn yamcs_param_to_hermes(
     };
 
     Ok(Some(sourced_telemetry))
+}
+
+/// Split a YAMCS qualified name into component and name
+/// E.g., "/BigData/bigDataComponent/Counter" -> ("BigData/bigDataComponent", "Counter")
+fn split_qualified_name(qualified_name: &str) -> (String, String) {
+    let trimmed = qualified_name.trim_start_matches('/');
+    if let Some(last_slash) = trimmed.rfind('/') {
+        let component = trimmed[..last_slash].to_string();
+        let name = trimmed[last_slash + 1..].to_string();
+        (component, name)
+    } else {
+        // No slash found, use the whole thing as name and empty component
+        ("".to_string(), trimmed.to_string())
+    }
 }
 
 /// Convert YAMCS Value to Hermes Value

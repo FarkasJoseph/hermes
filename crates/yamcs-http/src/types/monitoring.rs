@@ -68,15 +68,24 @@ pub struct SubscribedParameterInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ParameterValue {
     pub numeric_id: u32,
-    pub id: NamedObjectId,
-    pub raw_value: Value,
-    pub eng_value: Value,
+    #[serde(default)]
+    pub id: Option<NamedObjectId>,
+    #[serde(default)]
+    pub raw_value: Option<Value>,
+    #[serde(default)]
+    pub eng_value: Option<Value>,
+    #[serde(default)]
     pub acquisition_time: String,
+    #[serde(default)]
     pub generation_time: String,
-    pub acquisition_status: AcquisitionStatus,
-    pub monitoring_result: crate::types::common::MonitoringResult,
+    #[serde(default)]
+    pub acquisition_status: Option<AcquisitionStatus>,
+    #[serde(default)]
+    pub monitoring_result: Option<crate::types::common::MonitoringResult>,
+    #[serde(default)]
     pub alarm_range: Vec<AlarmRange>,
     pub range_condition: Option<RangeCondition>,
+    #[serde(default)]
     pub expire_millis: i64,
 }
 
