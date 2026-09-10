@@ -17,11 +17,28 @@ use hermes_server::api_server::Api;
 /// a chance to appear before we conclude the transfer failed.
 const PARTIAL_TRANSFER_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long a transfer can go with no packets at all before it's presumed dead and reported
+/// as DOWNLINK_PARTIAL. Covers the case where the END packet itself was lost, which happens
+/// in practice on a lossy link - without it such a transfer hangs in the in-progress list
+/// forever. Set well above the inter-packet gap of a healthy transfer.
+const TRANSFER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Partial (failed) downlinks already reported, retained so they keep appearing in later
+/// snapshots.
+///
+/// `take_stale_partial_transfers` consumes each partial exactly once, but `FileTransferState`
+/// is a full authoritative snapshot that the client replaces wholesale on every message - so
+/// without retention a failed transfer would appear in a single 2-second snapshot and then
+/// silently vanish, which is worse than not reporting it. Cleared by
+/// `ClearDownlinkTransferState`, matching how the completed list is meant to be resettable.
+type PartialDownlinks = Arc<std::sync::Mutex<Vec<FileDownlink>>>;
+
 pub struct YamcsApiService {
     yamcs_client: Arc<YamcsClient>,
     processor: String,
     downlink_bucket: String,
     transfer_tracker: file_transfer::TransferTracker,
+    partial_downlinks: PartialDownlinks,
 }
 
 impl YamcsApiService {
@@ -43,6 +60,7 @@ impl YamcsApiService {
             processor,
             downlink_bucket,
             transfer_tracker: file_transfer::TransferTracker::new(),
+            partial_downlinks: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
         service.spawn_packet_trackers();
         service
@@ -130,11 +148,7 @@ impl YamcsApiService {
     /// Note this consumes the stale entries (see `TransferTracker::take_stale_partial_transfers`),
     /// so each partial transfer is only reported once across whichever RPC observes it first.
     fn take_partial_downlinks(&self) -> Vec<FileDownlink> {
-        self.transfer_tracker
-            .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
-            .into_iter()
-            .map(|(instance, record)| partial_downlink_from_record(instance, record))
-            .collect()
+        drain_partials_into(&self.transfer_tracker, &self.partial_downlinks)
     }
 
     /// Extract FSW ID (YAMCS instance name) from gRPC request metadata
@@ -164,6 +178,34 @@ impl YamcsApiService {
             }
         }
     }
+}
+
+/// Move any newly-finalized partial transfers out of the tracker and into the retained list,
+/// then return the full retained list. Free function so the spawned polling tasks (which
+/// can't hold `&self`) share exactly the same logic as the instance method.
+fn drain_partials_into(
+    tracker: &file_transfer::TransferTracker,
+    retained: &PartialDownlinks,
+) -> Vec<FileDownlink> {
+    let newly_failed: Vec<FileDownlink> = tracker
+        .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD, TRANSFER_STALL_TIMEOUT)
+        .into_iter()
+        .map(|(instance, record)| partial_downlink_from_record(instance, record))
+        .collect();
+
+    let mut retained = retained.lock().expect("partial downlinks mutex poisoned");
+    for failed in newly_failed {
+        warn!(
+            uid = %failed.uid,
+            source = %failed.source,
+            size = failed.size,
+            missing_chunks = failed.missing_chunks.len(),
+            missing_bytes = failed.missing_chunks.iter().map(|c| c.size).sum::<u64>(),
+            "Transfer failed; reporting as DOWNLINK_PARTIAL"
+        );
+        retained.push(failed);
+    }
+    retained.clone()
 }
 
 /// Build a `DOWNLINK_PARTIAL` `FileDownlink` from a transfer record that ended with no
@@ -530,8 +572,16 @@ impl Api for YamcsApiService {
         &self,
         _request: Request<()>,
     ) -> Result<Response<()>, Status> {
-        // No-op for stub implementation
-        debug!("Clear downlink transfer state requested (stub - no-op)");
+        // Clears the retained DOWNLINK_PARTIAL records. Completed downlinks are not cleared:
+        // they're derived from the bucket on every poll, so they'd immediately reappear, and
+        // deleting bucket objects on a UI "clear" would be destructive and surprising.
+        let mut retained = self
+            .partial_downlinks
+            .lock()
+            .expect("partial downlinks mutex poisoned");
+        let count = retained.len();
+        retained.clear();
+        debug!(cleared = count, "Cleared retained partial downlink records");
         Ok(Response::new(()))
     }
 
@@ -1045,6 +1095,7 @@ impl Api for YamcsApiService {
         let service_client = self.yamcs_client.clone();
         let bucket = self.downlink_bucket.clone();
         let tracker = self.transfer_tracker.clone();
+        let partials = self.partial_downlinks.clone();
         let source_filter = if filter.source.is_empty() {
             None
         } else {
@@ -1061,11 +1112,9 @@ impl Api for YamcsApiService {
                     _ = interval.tick() => {
                         let mut downlinks = list_completed_downlinks_for(&service_client, &bucket, source_filter.as_deref()).await;
                         downlinks.extend(
-                            tracker
-                                .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
+                            drain_partials_into(&tracker, &partials)
                                 .into_iter()
-                                .filter(|(instance, _)| source_filter.as_deref().is_none_or(|f| f == instance))
-                                .map(|(instance, record)| partial_downlink_from_record(instance, record)),
+                                .filter(|d| source_filter.as_deref().is_none_or(|f| f == d.source)),
                         );
                         for downlink in downlinks {
                             let key = (downlink.source.clone(), downlink.uid.clone());
@@ -1120,6 +1169,7 @@ impl Api for YamcsApiService {
         let yamcs_client = self.yamcs_client.clone();
         let bucket = self.downlink_bucket.clone();
         let tracker = self.transfer_tracker.clone();
+        let partials = self.partial_downlinks.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -1127,12 +1177,7 @@ impl Api for YamcsApiService {
                 tokio::select! {
                     _ = interval.tick() => {
                         let mut downlink_completed = list_completed_downlinks_for(&yamcs_client, &bucket, None).await;
-                        downlink_completed.extend(
-                            tracker
-                                .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
-                                .into_iter()
-                                .map(|(instance, record)| partial_downlink_from_record(instance, record)),
-                        );
+                        downlink_completed.extend(drain_partials_into(&tracker, &partials));
                         let downlink_in_progress = tracker.in_progress(None);
                         let state = FileTransferState {
                             downlink_completed,

@@ -37,7 +37,7 @@
         "yamcs": {
             "key": "yamcs",
             "label": "yamcs",
-            "url": "http://localhost:6880",
+            "url": "http://127.0.0.1:6880",
             "authenticationMethod": "none",
             "skipTLSVerify": false
         }

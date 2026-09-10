@@ -274,6 +274,13 @@ pub struct TransferRecord {
     /// moment to appear; `Phase 3.3` join logic waits a grace period before concluding the
     /// transfer failed.
     pub ended_at: Option<std::time::Instant>,
+    /// When a packet for this transfer was last observed.
+    ///
+    /// Needed because the END packet is itself just a UDP packet and can be lost - observed
+    /// live on a 25 MB transfer that lost 73% of its data packets *and* its END. Without a
+    /// stall timeout such a transfer never leaves the in-progress list and is never reported
+    /// as partial, so it hangs in the UI at whatever percentage it reached.
+    pub last_activity: std::time::Instant,
 }
 
 /// Tracks in-flight file transfers per YAMCS instance from raw packet intervals, without
@@ -319,6 +326,7 @@ impl TransferTracker {
                         total_size,
                         tracker: IntervalTracker::new(),
                         ended_at: None,
+                        last_activity: std::time::Instant::now(),
                     },
                 );
             }
@@ -327,11 +335,14 @@ impl TransferTracker {
                 // (should be unique) in-flight transfer for this instance that hasn't ended.
                 if let Some(record) = transfers.values_mut().find(|r| r.ended_at.is_none()) {
                     record.tracker.record(offset as u64, length as u64);
+                    record.last_activity = std::time::Instant::now();
                 }
             }
             FilePacket::End { .. } => {
                 if let Some(record) = transfers.values_mut().find(|r| r.ended_at.is_none()) {
-                    record.ended_at = Some(std::time::Instant::now());
+                    let now = std::time::Instant::now();
+                    record.ended_at = Some(now);
+                    record.last_activity = now;
                 }
             }
             FilePacket::Cancel { .. } => {
@@ -363,13 +374,22 @@ impl TransferTracker {
             .collect()
     }
 
-    /// Transfers that ended more than `grace_period` ago, whose gaps should be reported as
-    /// `DOWNLINK_PARTIAL` because no matching bucket object showed up (Phase 3.3: this is the
-    /// join between packet-observed gaps and the bucket as authoritative content source).
-    /// Removes them from tracking once returned so they're only reported once.
+    /// Transfers whose gaps should be reported as `DOWNLINK_PARTIAL` because no matching
+    /// bucket object showed up (Phase 3.3: the join between packet-observed gaps and the
+    /// bucket as authoritative content source). Removes them from tracking once returned so
+    /// they're only reported once.
+    ///
+    /// Two ways a transfer qualifies:
+    ///
+    /// - it saw an END packet more than `grace_period` ago (the normal case: END arrived, we
+    ///   waited for the bucket object, none appeared, so the checksum must have failed)
+    /// - it has seen no packet at all for `stall_timeout` (the END packet was itself lost).
+    ///   Without this second case the transfer would never leave the in-progress list -
+    ///   observed live on a 25 MB transfer that lost both 73% of its data and its END packet.
     pub fn take_stale_partial_transfers(
         &self,
         grace_period: std::time::Duration,
+        stall_timeout: std::time::Duration,
     ) -> Vec<(String, TransferRecord)> {
         let mut transfers = self
             .transfers
@@ -377,9 +397,9 @@ impl TransferTracker {
             .expect("transfer tracker mutex poisoned");
         let stale_keys: Vec<_> = transfers
             .iter()
-            .filter(|(_, r)| {
-                r.ended_at
-                    .is_some_and(|ended_at| ended_at.elapsed() >= grace_period)
+            .filter(|(_, r)| match r.ended_at {
+                Some(ended_at) => ended_at.elapsed() >= grace_period,
+                None => r.last_activity.elapsed() >= stall_timeout,
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -608,23 +628,65 @@ mod tests {
                 checksum: 0,
             },
         );
+        let long = std::time::Duration::from_secs(60);
+        let zero = std::time::Duration::from_secs(0);
+
         // Not stale yet under a long grace period.
-        assert!(
-            tracker
-                .take_stale_partial_transfers(std::time::Duration::from_secs(60))
-                .is_empty()
-        );
+        assert!(tracker.take_stale_partial_transfers(long, long).is_empty());
         // Immediately stale under a zero grace period.
-        let stale = tracker.take_stale_partial_transfers(std::time::Duration::from_secs(0));
+        let stale = tracker.take_stale_partial_transfers(zero, long);
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].1.tracker.received_bytes(), 50);
         assert_eq!(stale[0].1.tracker.gaps(100).len(), 1);
         // Taken once; gone from tracking now.
-        assert!(
-            tracker
-                .take_stale_partial_transfers(std::time::Duration::from_secs(0))
-                .is_empty()
+        assert!(tracker.take_stale_partial_transfers(zero, long).is_empty());
+    }
+
+    /// Regression test for a bug found live: a 25 MB transfer lost 73% of its data packets
+    /// *and* its END packet, so `ended_at` was never set and the transfer hung in the
+    /// in-progress list at 27% indefinitely, never being reported as partial. A transfer that
+    /// has gone quiet must be finalized on the stall timeout even with no END.
+    #[test]
+    fn transfer_tracker_finalizes_stalled_transfer_with_no_end_packet() {
+        let tracker = TransferTracker::new();
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::Start {
+                sequence_index: 0,
+                total_size: 100,
+                source_path: "/src".to_string(),
+                destination_path: "./dst.bin".to_string(),
+            },
         );
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::Data {
+                sequence_index: 1,
+                offset: 0,
+                length: 27,
+            },
+        );
+        // No END packet ever arrives.
+        let long = std::time::Duration::from_secs(60);
+        let zero = std::time::Duration::from_secs(0);
+
+        // Still in progress while within the stall timeout.
+        assert!(tracker.take_stale_partial_transfers(long, long).is_empty());
+        assert_eq!(tracker.in_progress(None).len(), 1);
+
+        // Once it has gone quiet past the stall timeout, it is finalized as partial with the
+        // gaps observed, and leaves the in-progress list.
+        let stale = tracker.take_stale_partial_transfers(long, zero);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].1.tracker.received_bytes(), 27);
+        assert_eq!(
+            stale[0].1.tracker.gaps(100),
+            vec![FileDownlinkChunk {
+                offset: 27,
+                size: 73
+            }]
+        );
+        assert!(tracker.in_progress(None).is_empty());
     }
 
     #[test]
