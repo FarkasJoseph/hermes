@@ -6,6 +6,7 @@ use tracing::{debug, error, info, warn};
 use yamcs_http::YamcsClient;
 
 use crate::convert;
+use crate::dp_container;
 use crate::file_transfer;
 
 // Re-export the service trait from hermes_server
@@ -217,10 +218,39 @@ async fn list_completed_downlinks_for(
         match yamcs_client.list_objects(&instance.name, bucket).await {
             Ok(response) => {
                 for object in &response.objects {
-                    downlinks.push(file_transfer::bucket_object_to_file_downlink(
+                    let mut downlink = file_transfer::bucket_object_to_file_downlink(
                         object,
                         &instance.name,
-                    ));
+                    );
+                    // Phase 4: surface data product container metadata for .fdp objects.
+                    // In practice data products arrive as files on APID 3 (per Appendix A),
+                    // so they show up in this same bucket alongside ordinary files.
+                    if object.name.ends_with(".fdp") {
+                        if let Ok(bytes) = yamcs_client
+                            .get_object(&instance.name, bucket, &object.name)
+                            .await
+                        {
+                            if let Some(header) = dp_container::parse_header(&bytes) {
+                                downlink
+                                    .metadata
+                                    .insert("dp.containerId".to_string(), header.container_id.to_string());
+                                downlink
+                                    .metadata
+                                    .insert("dp.priority".to_string(), header.priority.to_string());
+                                downlink.metadata.insert(
+                                    "dp.time".to_string(),
+                                    format!("{}.{:06}", header.seconds, header.useconds),
+                                );
+                                downlink
+                                    .metadata
+                                    .insert("dp.state".to_string(), format!("{:?}", header.dp_state));
+                                downlink
+                                    .metadata
+                                    .insert("dp.dataSize".to_string(), header.data_size.to_string());
+                            }
+                        }
+                    }
+                    downlinks.push(downlink);
                 }
             }
             Err(e) => {
