@@ -162,7 +162,10 @@ pub fn yamcs_param_to_hermes(
         Some(id) => id.name.clone(),
         None => {
             // Numeric ID without a name mapping — skip this value
-            debug!(numeric_id = param.numeric_id, "Skipping parameter value with unresolved numeric_id");
+            debug!(
+                numeric_id = param.numeric_id,
+                "Skipping parameter value with unresolved numeric_id"
+            );
             return Ok(None);
         }
     };
@@ -185,7 +188,10 @@ pub fn yamcs_param_to_hermes(
         yamcs_value_to_hermes(raw_val)?
     } else {
         // No value available; skip this parameter
-        debug!(numeric_id = param.numeric_id, "Skipping parameter with no value");
+        debug!(
+            numeric_id = param.numeric_id,
+            "Skipping parameter with no value"
+        );
         return Ok(None);
     };
 

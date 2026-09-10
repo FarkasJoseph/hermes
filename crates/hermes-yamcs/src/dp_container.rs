@@ -110,14 +110,21 @@ pub fn parse_header(data: &[u8]) -> Option<DpContainerHeader> {
 /// don't self-describe a record count in the header (only total byte size), so the caller must
 /// supply the record layout's size in bytes; this just does the division and reports whether
 /// it was exact.
+///
+/// Not yet called from the service (the prototype doesn't have a per-container record layout
+/// to supply); kept as library-style API for the next caller, exercised by unit tests below.
+#[allow(dead_code)]
 pub fn record_count(data_size: u16, record_size: u16) -> Option<u32> {
-    if record_size == 0 || data_size % record_size != 0 {
+    if record_size == 0 || !data_size.is_multiple_of(record_size) {
         return None;
     }
     Some(data_size as u32 / record_size as u32)
 }
 
 /// Validate the container's total length against `data_size`: `57 + 4 + dataSize + 4`.
+///
+/// Not yet called from the service; kept as library-style API, exercised by unit tests below.
+#[allow(dead_code)]
 pub fn expected_total_len(data_size: u16) -> usize {
     HEADER_SIZE + HASH_SIZE + data_size as usize + HASH_SIZE
 }
@@ -138,12 +145,12 @@ mod tests {
         data.extend_from_slice(&1788986684u32.to_be_bytes()); // seconds
         data.extend_from_slice(&693201u32.to_be_bytes()); // useconds
         data.push(0); // proc types
-        data.extend(std::iter::repeat(0u8).take(CONTAINER_USER_DATA_SIZE)); // user data
+        data.extend(std::iter::repeat_n(0u8, CONTAINER_USER_DATA_SIZE)); // user data
         data.push(0); // dp state UNTRANSMITTED
         data.extend_from_slice(&1212u16.to_be_bytes()); // data size
         data.extend_from_slice(&0xDEADBEEFu32.to_be_bytes()); // header hash (arbitrary for the fixture)
         assert_eq!(data.len(), HEADER_SIZE + HASH_SIZE);
-        data.extend(std::iter::repeat(0u8).take(1212)); // records
+        data.extend(std::iter::repeat_n(0u8, 1212)); // records
         data.extend_from_slice(&0xCAFEBABEu32.to_be_bytes()); // data hash
         assert_eq!(data.len(), 1277);
         data

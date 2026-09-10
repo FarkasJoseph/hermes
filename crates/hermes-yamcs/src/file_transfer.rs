@@ -37,10 +37,7 @@ pub fn bucket_object_to_file_downlink(
     FileDownlink {
         uid: object.name.clone(),
         time_start: None,
-        time_end: object
-            .created
-            .as_deref()
-            .and_then(parse_yamcs_timestamp),
+        time_end: object.created.as_deref().and_then(parse_yamcs_timestamp),
         status: FileDownlinkCompletionStatus::DownlinkCompleted as i32,
         source: source.to_string(),
         source_path: String::new(),
@@ -116,6 +113,11 @@ impl IntervalTracker {
     }
 
     /// Total number of bytes that arrived more than once.
+    ///
+    /// Not yet surfaced on `FileDownlink` (only `duplicate_chunks`, a list, is; see the
+    /// module's `TransferTracker`/`partial_downlink_from_record` for why that list isn't
+    /// populated in the prototype). Kept as library-style API, exercised by unit tests below.
+    #[allow(dead_code)]
     pub fn duplicate_bytes(&self) -> u64 {
         self.duplicate_bytes
     }
@@ -282,7 +284,9 @@ pub struct TransferRecord {
 pub struct TransferTracker {
     // Keyed by (instance, destination_path). A real deployment could see multiple concurrent
     // transfers per instance, so destination path (not just instance) disambiguates them.
-    transfers: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), TransferRecord>>>,
+    transfers: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<(String, String), TransferRecord>>,
+    >,
 }
 
 impl TransferTracker {
@@ -295,7 +299,10 @@ impl TransferTracker {
     /// started mid-transfer) are tolerated: DATA/END packets with no existing record are
     /// dropped rather than erroring, since without a START we don't know the total size.
     pub fn handle_packet(&self, instance: &str, packet: FilePacket) {
-        let mut transfers = self.transfers.lock().expect("transfer tracker mutex poisoned");
+        let mut transfers = self
+            .transfers
+            .lock()
+            .expect("transfer tracker mutex poisoned");
         match packet {
             FilePacket::Start {
                 total_size,
@@ -318,18 +325,12 @@ impl TransferTracker {
             FilePacket::Data { offset, length, .. } => {
                 // We don't know the destination path from a DATA packet alone, so find the
                 // (should be unique) in-flight transfer for this instance that hasn't ended.
-                if let Some(record) = transfers
-                    .values_mut()
-                    .find(|r| r.ended_at.is_none())
-                {
+                if let Some(record) = transfers.values_mut().find(|r| r.ended_at.is_none()) {
                     record.tracker.record(offset as u64, length as u64);
                 }
             }
             FilePacket::End { .. } => {
-                if let Some(record) = transfers
-                    .values_mut()
-                    .find(|r| r.ended_at.is_none())
-                {
+                if let Some(record) = transfers.values_mut().find(|r| r.ended_at.is_none()) {
                     record.ended_at = Some(std::time::Instant::now());
                 }
             }
@@ -342,12 +343,14 @@ impl TransferTracker {
     /// Snapshot of transfers still in flight (no END seen yet), as `FileTransfer` records for
     /// `FileTransferState::downlink_in_progress`.
     pub fn in_progress(&self, instance_filter: Option<&str>) -> Vec<FileTransfer> {
-        let transfers = self.transfers.lock().expect("transfer tracker mutex poisoned");
+        let transfers = self
+            .transfers
+            .lock()
+            .expect("transfer tracker mutex poisoned");
         transfers
             .iter()
             .filter(|((instance, _), record)| {
-                record.ended_at.is_none()
-                    && instance_filter.is_none_or(|f| f == instance)
+                record.ended_at.is_none() && instance_filter.is_none_or(|f| f == instance)
             })
             .map(|((instance, _), record)| FileTransfer {
                 uid: record.destination_path.clone(),
@@ -368,7 +371,10 @@ impl TransferTracker {
         &self,
         grace_period: std::time::Duration,
     ) -> Vec<(String, TransferRecord)> {
-        let mut transfers = self.transfers.lock().expect("transfer tracker mutex poisoned");
+        let mut transfers = self
+            .transfers
+            .lock()
+            .expect("transfer tracker mutex poisoned");
         let stale_keys: Vec<_> = transfers
             .iter()
             .filter(|(_, r)| {
@@ -389,7 +395,11 @@ impl TransferTracker {
 mod tests {
     use super::*;
 
-    fn object(name: &str, size: u64, created: Option<&str>) -> yamcs_http::types::buckets::BucketObject {
+    fn object(
+        name: &str,
+        size: u64,
+        created: Option<&str>,
+    ) -> yamcs_http::types::buckets::BucketObject {
         yamcs_http::types::buckets::BucketObject {
             name: name.to_string(),
             size: Some(size),
@@ -410,7 +420,10 @@ mod tests {
         assert_eq!(fd.uid, "./DpCat/Dp_268521472_1788986684_00693201.fdp");
         assert_eq!(fd.size, 1277);
         assert_eq!(fd.source, "myinstance");
-        assert_eq!(fd.status, FileDownlinkCompletionStatus::DownlinkCompleted as i32);
+        assert_eq!(
+            fd.status,
+            FileDownlinkCompletionStatus::DownlinkCompleted as i32
+        );
         assert!(fd.missing_chunks.is_empty());
         assert!(fd.duplicate_chunks.is_empty());
         assert!(fd.time_end.is_some());
@@ -498,7 +511,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, // offset 0
             0x00, 0x19, // length 25
         ];
-        data.extend(std::iter::repeat(0u8).take(25)); // 25 bytes of payload
+        data.extend(std::iter::repeat_n(0u8, 25)); // 25 bytes of payload
 
         let packet = parse_file_packet(&data).expect("should parse as a file packet");
         assert_eq!(

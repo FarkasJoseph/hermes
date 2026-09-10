@@ -77,11 +77,10 @@ impl YamcsApiService {
                     if !matches!(
                         yamcs_client.websocket_state().await,
                         Some(ConnectionState::Connected)
-                    ) {
-                        if let Err(e) = yamcs_client.connect_websocket().await {
-                            error!(error = %e, instance = %instance_name, "Failed to connect WebSocket for packet tracking");
-                            return;
-                        }
+                    ) && let Err(e) = yamcs_client.connect_websocket().await
+                    {
+                        error!(error = %e, instance = %instance_name, "Failed to connect WebSocket for packet tracking");
+                        return;
                     }
 
                     let request = yamcs_http::types::monitoring::SubscribePacketsRequest {
@@ -120,8 +119,7 @@ impl YamcsApiService {
     /// once the CFDP checksum has passed, so every object found here is a completed transfer;
     /// failed/partial transfers never appear in the bucket at all.
     async fn list_completed_downlinks(&self, source_filter: Option<&str>) -> Vec<FileDownlink> {
-        list_completed_downlinks_for(&self.yamcs_client, &self.downlink_bucket, source_filter)
-            .await
+        list_completed_downlinks_for(&self.yamcs_client, &self.downlink_bucket, source_filter).await
     }
 
     /// Transfers whose END packet was observed more than `PARTIAL_TRANSFER_GRACE_PERIOD` ago
@@ -210,45 +208,43 @@ async fn list_completed_downlinks_for(
 
     let mut downlinks = Vec::new();
     for instance in instances {
-        if let Some(filter) = source_filter {
-            if filter != instance.name {
-                continue;
-            }
+        if let Some(filter) = source_filter
+            && filter != instance.name
+        {
+            continue;
         }
         match yamcs_client.list_objects(&instance.name, bucket).await {
             Ok(response) => {
                 for object in &response.objects {
-                    let mut downlink = file_transfer::bucket_object_to_file_downlink(
-                        object,
-                        &instance.name,
-                    );
+                    let mut downlink =
+                        file_transfer::bucket_object_to_file_downlink(object, &instance.name);
                     // Phase 4: surface data product container metadata for .fdp objects.
                     // In practice data products arrive as files on APID 3 (per Appendix A),
                     // so they show up in this same bucket alongside ordinary files.
-                    if object.name.ends_with(".fdp") {
-                        if let Ok(bytes) = yamcs_client
+                    if object.name.ends_with(".fdp")
+                        && let Ok(bytes) = yamcs_client
                             .get_object(&instance.name, bucket, &object.name)
                             .await
-                        {
-                            if let Some(header) = dp_container::parse_header(&bytes) {
-                                downlink
-                                    .metadata
-                                    .insert("dp.containerId".to_string(), header.container_id.to_string());
-                                downlink
-                                    .metadata
-                                    .insert("dp.priority".to_string(), header.priority.to_string());
-                                downlink.metadata.insert(
-                                    "dp.time".to_string(),
-                                    format!("{}.{:06}", header.seconds, header.useconds),
-                                );
-                                downlink
-                                    .metadata
-                                    .insert("dp.state".to_string(), format!("{:?}", header.dp_state));
-                                downlink
-                                    .metadata
-                                    .insert("dp.dataSize".to_string(), header.data_size.to_string());
-                            }
-                        }
+                        && let Some(header) = dp_container::parse_header(&bytes)
+                        && header.descriptor == dp_container::DP_DESCRIPTOR
+                    {
+                        downlink.metadata.insert(
+                            "dp.containerId".to_string(),
+                            header.container_id.to_string(),
+                        );
+                        downlink
+                            .metadata
+                            .insert("dp.priority".to_string(), header.priority.to_string());
+                        downlink.metadata.insert(
+                            "dp.time".to_string(),
+                            format!("{}.{:06}", header.seconds, header.useconds),
+                        );
+                        downlink
+                            .metadata
+                            .insert("dp.state".to_string(), format!("{:?}", header.dp_state));
+                        downlink
+                            .metadata
+                            .insert("dp.dataSize".to_string(), header.data_size.to_string());
                     }
                     downlinks.push(downlink);
                 }
@@ -979,10 +975,10 @@ impl Api for YamcsApiService {
                                             // Convert each parameter value to Hermes telemetry
                                             for mut param_value in data.values {
                                                 // Resolve numeric_id to name if id is missing
-                                                if param_value.id.is_none() {
-                                                    if let Some(resolved_id) = numeric_id_map.get(&param_value.numeric_id) {
-                                                        param_value.id = Some(resolved_id.clone());
-                                                    }
+                                                if param_value.id.is_none()
+                                                    && let Some(resolved_id) = numeric_id_map.get(&param_value.numeric_id)
+                                                {
+                                                    param_value.id = Some(resolved_id.clone());
                                                 }
 
                                                 match convert::yamcs_param_to_hermes(&param_value, &filter) {
@@ -1073,11 +1069,9 @@ impl Api for YamcsApiService {
                         );
                         for downlink in downlinks {
                             let key = (downlink.source.clone(), downlink.uid.clone());
-                            if seen.insert(key) {
-                                if tx.send(Ok(downlink)).await.is_err() {
-                                    debug!("File downlink subscription closed by client");
-                                    return;
-                                }
+                            if seen.insert(key) && tx.send(Ok(downlink)).await.is_err() {
+                                debug!("File downlink subscription closed by client");
+                                return;
                             }
                         }
                     }
