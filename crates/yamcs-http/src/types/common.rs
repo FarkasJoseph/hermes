@@ -80,7 +80,10 @@ pub enum Value {
     Uint32 { uint32_value: u32 },
     /// Unsigned 64-bit integer
     #[serde(rename_all = "camelCase")]
-    Uint64 { uint64_value: u64 },
+    Uint64 {
+        #[serde(deserialize_with = "deserialize_string_or_number")]
+        uint64_value: u64,
+    },
 }
 
 /// Aggregate (struct-like) value containing named fields
@@ -230,5 +233,39 @@ where
         }
         Some(StringOrNumber::Number(n)) => Ok(Some(n)),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Confirmed against a live YAMCS 5.12.0 server: a UINT64 telemetry value (e.g. an
+    /// F Prime U64 channel) is serialized with `uint64Value` as a JSON *string*, not a bare
+    /// number, per proto3 JSON's convention for 64-bit integer types. Without this, the
+    /// whole SubscribeParametersData message fails to deserialize and the telemetry stream
+    /// silently drops every value in that batch.
+    #[test]
+    fn uint64_value_deserializes_from_json_string() {
+        let json = r#"{"type": "UINT64", "uint64Value": "9254752"}"#;
+        let value: Value = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(
+            value,
+            Value::Uint64 {
+                uint64_value: 9254752
+            }
+        );
+    }
+
+    #[test]
+    fn uint64_value_deserializes_from_json_number() {
+        let json = r#"{"type": "UINT64", "uint64Value": 9254752}"#;
+        let value: Value = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(
+            value,
+            Value::Uint64 {
+                uint64_value: 9254752
+            }
+        );
     }
 }
