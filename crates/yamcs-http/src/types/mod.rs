@@ -1,5 +1,7 @@
 /// Alarm types
 pub mod alarms;
+/// Bucket (blob storage) types
+pub mod buckets;
 /// Common types shared across the YAMCS API
 pub mod common;
 /// Event types
@@ -17,6 +19,7 @@ pub use alarms::{
     GlobalAlarmStatus, ShelveAlarmOptions, SubscribeAlarmsRequest,
     SubscribeGlobalAlarmStatusRequest,
 };
+pub use buckets::{Bucket, BucketObject, ListBucketsResponse, ListObjectsResponse};
 pub use common::{AggregateValue, MonitoringResult, NamedObjectId, Value};
 pub use events::{
     CreateEventRequest, Event, EventSeverity, GetEventsOptions, SubscribeEventsRequest,

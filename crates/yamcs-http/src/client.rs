@@ -524,6 +524,49 @@ impl YamcsClient {
             .await
     }
 
+    /// List buckets available on a YAMCS instance
+    pub async fn list_buckets(
+        &self,
+        instance: &str,
+    ) -> Result<crate::types::buckets::ListBucketsResponse> {
+        self.http
+            .get(&format!("/api/buckets/{}", instance))
+            .await
+    }
+
+    /// List objects within a bucket
+    ///
+    /// Object names can contain `/` and, per YAMCS's file-downlink service, a literal leading
+    /// `./` — but the bucket name itself is a single path segment, so it's encoded on its own.
+    pub async fn list_objects(
+        &self,
+        instance: &str,
+        bucket: &str,
+    ) -> Result<crate::types::buckets::ListObjectsResponse> {
+        self.http
+            .get(&format!(
+                "/api/buckets/{}/{}/objects",
+                instance,
+                urlencoding::encode(bucket)
+            ))
+            .await
+    }
+
+    /// Fetch the raw bytes of a bucket object
+    ///
+    /// `name` must be URL-encoded before use since object names may contain `/` and a leading
+    /// `./`, per how `FprimeFilePacketService` names downlinked files.
+    pub async fn get_object(&self, instance: &str, bucket: &str, name: &str) -> Result<Vec<u8>> {
+        self.http
+            .get_bytes(&format!(
+                "/api/buckets/{}/{}/objects/{}",
+                instance,
+                urlencoding::encode(bucket),
+                urlencoding::encode(name)
+            ))
+            .await
+    }
+
     /// Create a processor
     pub async fn create_processor(
         &self,
@@ -1042,5 +1085,24 @@ mod tests {
     fn test_invalid_url() {
         let client = YamcsClient::new("not-a-valid-url");
         assert!(client.is_err());
+    }
+
+    /// Real object names observed in the `fprimeFilesIn` bucket contain a literal leading
+    /// `./` and embedded `/`. Both must be percent-encoded so the resulting path segment is
+    /// unambiguous, rather than being interpolated raw.
+    #[test]
+    fn test_bucket_object_name_encoding_data_product() {
+        let name = "./DpCat/Dp_268521472_1788986684_00693201.fdp";
+        let encoded = urlencoding::encode(name);
+        assert_eq!(encoded, ".%2FDpCat%2FDp_268521472_1788986684_00693201.fdp");
+        // Sanity check it round-trips back to the original name.
+        assert_eq!(urlencoding::decode(&encoded).unwrap(), name);
+    }
+
+    #[test]
+    fn test_bucket_object_name_encoding_plain_file() {
+        let name = "pic.jpg";
+        let encoded = urlencoding::encode(name);
+        assert_eq!(encoded, "pic.jpg");
     }
 }

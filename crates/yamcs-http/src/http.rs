@@ -217,6 +217,14 @@ impl HttpClient {
         Ok(data)
     }
 
+    /// Make a GET request and return the raw response bytes (no JSON parsing)
+    pub async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let builder = self.request(Method::GET, path)?;
+        let response = self.execute(builder).await?;
+        let bytes = response.bytes().await.map_err(YamcsError::Http)?;
+        Ok(bytes.to_vec())
+    }
+
     /// Get the base URL
     pub fn base_url(&self) -> &Url {
         &self.base_url
