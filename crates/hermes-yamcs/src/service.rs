@@ -218,8 +218,12 @@ fn partial_downlink_from_record(
 ) -> FileDownlink {
     FileDownlink {
         uid: record.destination_path.clone(),
-        time_start: None,
-        time_end: None,
+        // Real observed times: when the START packet arrived, and when the last packet for
+        // this transfer arrived. Note the client renders a missing timestamp as "now", so
+        // leaving these empty produces a start time that ticks upward and a negative
+        // duration - always populate them.
+        time_start: file_transfer::system_time_to_timestamp(record.started_at),
+        time_end: file_transfer::system_time_to_timestamp(record.last_packet_at),
         status: FileDownlinkCompletionStatus::DownlinkPartial as i32,
         source: instance,
         source_path: record.source_path,
