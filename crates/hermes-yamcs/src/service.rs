@@ -6,6 +6,7 @@ use tracing::{debug, error, info, warn};
 use yamcs_http::YamcsClient;
 
 use crate::convert;
+use crate::dp_container;
 use crate::file_transfer;
 
 // Re-export the service trait from hermes_server
@@ -16,11 +17,23 @@ use hermes_server::api_server::Api;
 /// a chance to appear before we conclude the transfer failed.
 const PARTIAL_TRANSFER_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Parsed `.fdp` container metadata (the `dp.*` `FileDownlink.metadata` entries), keyed by
+/// `(instance, bucket, object name, object size)`. A completed downlink's bytes never change,
+/// so this is cached forever rather than re-fetched (and its whole content re-downloaded)
+/// on every poll; `None` means the object didn't parse as a valid container, cached too so a
+/// malformed `.fdp` isn't re-fetched forever either.
+type DpMetadataCache = Arc<
+    tokio::sync::Mutex<
+        std::collections::HashMap<(String, String, String, u64), Option<std::collections::HashMap<String, String>>>,
+    >,
+>;
+
 pub struct YamcsApiService {
     yamcs_client: Arc<YamcsClient>,
     processor: String,
     downlink_bucket: String,
     transfer_tracker: file_transfer::TransferTracker,
+    dp_metadata: DpMetadataCache,
 }
 
 impl YamcsApiService {
@@ -42,6 +55,7 @@ impl YamcsApiService {
             processor,
             downlink_bucket,
             transfer_tracker: file_transfer::TransferTracker::new(),
+            dp_metadata: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         };
         service.spawn_packet_trackers();
         service
@@ -119,8 +133,13 @@ impl YamcsApiService {
     /// once the CFDP checksum has passed, so every object found here is a completed transfer;
     /// failed/partial transfers never appear in the bucket at all.
     async fn list_completed_downlinks(&self, source_filter: Option<&str>) -> Vec<FileDownlink> {
-        list_completed_downlinks_for(&self.yamcs_client, &self.downlink_bucket, source_filter)
-            .await
+        list_completed_downlinks_for(
+            &self.yamcs_client,
+            &self.downlink_bucket,
+            source_filter,
+            &self.dp_metadata,
+        )
+        .await
     }
 
     /// Transfers whose END packet was observed more than `PARTIAL_TRANSFER_GRACE_PERIOD` ago
@@ -191,6 +210,57 @@ fn partial_downlink_from_record(
     }
 }
 
+/// Look up (and cache) a `.fdp` object's parsed container metadata (the `dp.*`
+/// `FileDownlink.metadata` entries). A completed downlink's bytes never change, so this is
+/// fetched (and its whole content downloaded) at most once per object, ever - not on every
+/// poll - keyed by `(instance, bucket, name, size)` so a same-named object that later changes
+/// size still gets re-fetched. Returns `None` if the object isn't a valid container; that
+/// result is cached too, so a malformed `.fdp` isn't retried forever.
+async fn resolve_dp_metadata(
+    yamcs_client: &YamcsClient,
+    cache: &DpMetadataCache,
+    instance: &str,
+    bucket: &str,
+    object: &yamcs_http::types::buckets::BucketObject,
+) -> Option<std::collections::HashMap<String, String>> {
+    let cache_key = (
+        instance.to_string(),
+        bucket.to_string(),
+        object.name.clone(),
+        object.size.unwrap_or(0),
+    );
+    if let Some(metadata) = cache.lock().await.get(&cache_key) {
+        return metadata.clone();
+    }
+
+    // Only a fetch that actually completed gets cached (whether or not it parsed as a valid
+    // container) - a transient network error should be retried on the next poll, not
+    // permanently remembered as "not a container".
+    let bytes = match yamcs_client.get_object(instance, bucket, &object.name).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            debug!(error = %e, instance = %instance, bucket = %bucket, object = %object.name, "Failed to fetch .fdp object for container metadata");
+            return None;
+        }
+    };
+    let metadata = dp_container::parse_header(&bytes)
+        .filter(|header| header.descriptor == dp_container::DP_DESCRIPTOR)
+        .map(|header| {
+            std::collections::HashMap::from([
+                ("dp.containerId".to_string(), header.container_id.to_string()),
+                ("dp.priority".to_string(), header.priority.to_string()),
+                (
+                    "dp.time".to_string(),
+                    format!("{}.{:06}", header.seconds, header.useconds),
+                ),
+                ("dp.state".to_string(), format!("{:?}", header.dp_state)),
+                ("dp.dataSize".to_string(), header.data_size.to_string()),
+            ])
+        });
+    cache.lock().await.insert(cache_key, metadata.clone());
+    metadata
+}
+
 /// List completed downlinks across all YAMCS instances (or a single instance, if
 /// `source_filter` is set), by listing objects in `bucket`. Free function (rather than a
 /// method) so it can be called from a spawned task that only holds an `Arc<YamcsClient>`.
@@ -198,6 +268,7 @@ async fn list_completed_downlinks_for(
     yamcs_client: &YamcsClient,
     bucket: &str,
     source_filter: Option<&str>,
+    dp_metadata: &DpMetadataCache,
 ) -> Vec<FileDownlink> {
     let instances = match yamcs_client.get_instances().await {
         Ok(instances) => instances,
@@ -217,10 +288,53 @@ async fn list_completed_downlinks_for(
         match yamcs_client.list_objects(&instance.name, bucket).await {
             Ok(response) => {
                 for object in &response.objects {
-                    downlinks.push(file_transfer::bucket_object_to_file_downlink(
+                    let mut downlink = file_transfer::bucket_object_to_file_downlink(
                         object,
                         &instance.name,
-                    ));
+                    );
+                    // Phase 4: surface data product container metadata for .fdp objects.
+                    // In practice data products arrive as files on APID 3 (per Appendix A),
+                    // so they show up in this same bucket alongside ordinary files.
+<<<<<<< HEAD
+                    if object.name.ends_with(".fdp") {
+                        if let Ok(bytes) = yamcs_client
+                            .get_object(&instance.name, bucket, &object.name)
+                            .await
+                        {
+                            if let Some(header) = dp_container::parse_header(&bytes) {
+                                downlink
+                                    .metadata
+                                    .insert("dp.containerId".to_string(), header.container_id.to_string());
+                                downlink
+                                    .metadata
+                                    .insert("dp.priority".to_string(), header.priority.to_string());
+                                downlink.metadata.insert(
+                                    "dp.time".to_string(),
+                                    format!("{}.{:06}", header.seconds, header.useconds),
+                                );
+                                downlink
+                                    .metadata
+                                    .insert("dp.state".to_string(), format!("{:?}", header.dp_state));
+                                downlink
+                                    .metadata
+                                    .insert("dp.dataSize".to_string(), header.data_size.to_string());
+                            }
+                        }
+=======
+                    if object.name.ends_with(".fdp")
+                        && let Some(metadata) = resolve_dp_metadata(
+                            yamcs_client,
+                            dp_metadata,
+                            &instance.name,
+                            bucket,
+                            object,
+                        )
+                        .await
+                    {
+                        downlink.metadata.extend(metadata);
+>>>>>>> 5e4fa14 (fixup! Phase 4: data product container parsing)
+                    }
+                    downlinks.push(downlink);
                 }
             }
             Err(e) => {
@@ -1019,6 +1133,7 @@ impl Api for YamcsApiService {
         let service_client = self.yamcs_client.clone();
         let bucket = self.downlink_bucket.clone();
         let tracker = self.transfer_tracker.clone();
+        let dp_metadata = self.dp_metadata.clone();
         let source_filter = if filter.source.is_empty() {
             None
         } else {
@@ -1033,7 +1148,7 @@ impl Api for YamcsApiService {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let mut downlinks = list_completed_downlinks_for(&service_client, &bucket, source_filter.as_deref()).await;
+                        let mut downlinks = list_completed_downlinks_for(&service_client, &bucket, source_filter.as_deref(), &dp_metadata).await;
                         downlinks.extend(
                             tracker
                                 .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
@@ -1096,13 +1211,14 @@ impl Api for YamcsApiService {
         let yamcs_client = self.yamcs_client.clone();
         let bucket = self.downlink_bucket.clone();
         let tracker = self.transfer_tracker.clone();
+        let dp_metadata = self.dp_metadata.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let mut downlink_completed = list_completed_downlinks_for(&yamcs_client, &bucket, None).await;
+                        let mut downlink_completed = list_completed_downlinks_for(&yamcs_client, &bucket, None, &dp_metadata).await;
                         downlink_completed.extend(
                             tracker
                                 .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
