@@ -34,10 +34,15 @@ pub fn bucket_object_to_file_downlink(
     object: &yamcs_http::types::buckets::BucketObject,
     source: &str,
 ) -> FileDownlink {
+    // A bucket object records only when it was written, so the true transfer start is
+    // unknown. Report start == end (duration 0) rather than leaving start empty: the client
+    // substitutes "now" for a missing timestamp, which renders as a start time that ticks
+    // upward on every refresh and an ever-more-negative duration.
+    let created = object.created.as_deref().and_then(parse_yamcs_timestamp);
     FileDownlink {
         uid: object.name.clone(),
-        time_start: None,
-        time_end: object.created.as_deref().and_then(parse_yamcs_timestamp),
+        time_start: created,
+        time_end: created,
         status: FileDownlinkCompletionStatus::DownlinkCompleted as i32,
         source: source.to_string(),
         source_path: String::new(),
@@ -280,7 +285,23 @@ pub struct TransferRecord {
     /// live on a 25 MB transfer that lost 73% of its data packets *and* its END. Without a
     /// stall timeout such a transfer never leaves the in-progress list and is never reported
     /// as partial, so it hangs in the UI at whatever percentage it reached.
+    ///
+    /// `Instant` (monotonic) is the right clock for measuring the timeout.
     pub last_activity: std::time::Instant,
+    /// Wall-clock time the START packet was seen, for reporting `FileDownlink.time_start`.
+    pub started_at: std::time::SystemTime,
+    /// Wall-clock time the last packet was seen, for reporting `FileDownlink.time_end`. More
+    /// honest than "when we noticed it stalled", which is up to `stall_timeout` later.
+    pub last_packet_at: std::time::SystemTime,
+}
+
+/// Convert a wall-clock time to a protobuf `Timestamp`.
+pub fn system_time_to_timestamp(time: std::time::SystemTime) -> Option<Timestamp> {
+    let since_epoch = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(Timestamp {
+        seconds: since_epoch.as_secs() as i64,
+        nanos: since_epoch.subsec_nanos() as i32,
+    })
 }
 
 /// Tracks in-flight file transfers per YAMCS instance from raw packet intervals, without
@@ -327,6 +348,8 @@ impl TransferTracker {
                         tracker: IntervalTracker::new(),
                         ended_at: None,
                         last_activity: std::time::Instant::now(),
+                        started_at: std::time::SystemTime::now(),
+                        last_packet_at: std::time::SystemTime::now(),
                     },
                 );
             }
@@ -340,6 +363,7 @@ impl TransferTracker {
                 {
                     record.tracker.record(offset as u64, length as u64);
                     record.last_activity = std::time::Instant::now();
+                    record.last_packet_at = std::time::SystemTime::now();
                 }
             }
             FilePacket::End { .. } => {
@@ -351,6 +375,7 @@ impl TransferTracker {
                     let now = std::time::Instant::now();
                     record.ended_at = Some(now);
                     record.last_activity = now;
+                    record.last_packet_at = std::time::SystemTime::now();
                 }
             }
             FilePacket::Cancel { .. } => {
