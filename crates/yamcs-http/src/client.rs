@@ -529,9 +529,7 @@ impl YamcsClient {
         &self,
         instance: &str,
     ) -> Result<crate::types::buckets::ListBucketsResponse> {
-        self.http
-            .get(&format!("/api/buckets/{}", instance))
-            .await
+        self.http.get(&format!("/api/buckets/{}", instance)).await
     }
 
     /// List objects within a bucket

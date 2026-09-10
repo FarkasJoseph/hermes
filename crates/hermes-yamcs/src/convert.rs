@@ -164,7 +164,10 @@ pub fn yamcs_param_to_hermes(
     let param_name = match &param.id {
         Some(id) => id.name.clone(),
         None => {
-            debug!(numeric_id = param.numeric_id, "Skipping parameter value with unresolved numeric_id");
+            debug!(
+                numeric_id = param.numeric_id,
+                "Skipping parameter value with unresolved numeric_id"
+            );
             return Ok(None);
         }
     };
@@ -182,7 +185,10 @@ pub fn yamcs_param_to_hermes(
 
     let Some(eng_val) = &param.eng_value else {
         // No value available; skip this parameter
-        debug!(numeric_id = param.numeric_id, "Skipping parameter with no value");
+        debug!(
+            numeric_id = param.numeric_id,
+            "Skipping parameter with no value"
+        );
         return Ok(None);
     };
     let value = yamcs_value_to_hermes(eng_val)?;
