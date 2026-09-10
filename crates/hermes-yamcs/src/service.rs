@@ -6,6 +6,7 @@ use tracing::{debug, error, info, warn};
 use yamcs_http::YamcsClient;
 
 use crate::convert;
+use crate::file_transfer;
 
 // Re-export the service trait from hermes_server
 use hermes_server::api_server::Api;
@@ -13,14 +14,37 @@ use hermes_server::api_server::Api;
 pub struct YamcsApiService {
     yamcs_client: Arc<YamcsClient>,
     processor: String,
+    downlink_bucket: String,
 }
 
 impl YamcsApiService {
     pub fn new(yamcs_client: YamcsClient, processor: String) -> Self {
+        Self::with_downlink_bucket(
+            yamcs_client,
+            processor,
+            file_transfer::DEFAULT_DOWNLINK_BUCKET.to_string(),
+        )
+    }
+
+    pub fn with_downlink_bucket(
+        yamcs_client: YamcsClient,
+        processor: String,
+        downlink_bucket: String,
+    ) -> Self {
         Self {
             yamcs_client: Arc::new(yamcs_client),
             processor,
+            downlink_bucket,
         }
+    }
+
+    /// List completed downlinks across all YAMCS instances, by listing objects in the
+    /// downlink bucket (default `fprimeFilesIn`, per F8). Per F8, YAMCS only writes an object
+    /// once the CFDP checksum has passed, so every object found here is a completed transfer;
+    /// failed/partial transfers never appear in the bucket at all.
+    async fn list_completed_downlinks(&self, source_filter: Option<&str>) -> Vec<FileDownlink> {
+        list_completed_downlinks_for(&self.yamcs_client, &self.downlink_bucket, source_filter)
+            .await
     }
 
     /// Extract FSW ID (YAMCS instance name) from gRPC request metadata
@@ -50,6 +74,48 @@ impl YamcsApiService {
             }
         }
     }
+}
+
+/// List completed downlinks across all YAMCS instances (or a single instance, if
+/// `source_filter` is set), by listing objects in `bucket`. Free function (rather than a
+/// method) so it can be called from a spawned task that only holds an `Arc<YamcsClient>`.
+async fn list_completed_downlinks_for(
+    yamcs_client: &YamcsClient,
+    bucket: &str,
+    source_filter: Option<&str>,
+) -> Vec<FileDownlink> {
+    let instances = match yamcs_client.get_instances().await {
+        Ok(instances) => instances,
+        Err(e) => {
+            error!(error = %e, "Failed to list YAMCS instances for downlink listing");
+            return vec![];
+        }
+    };
+
+    let mut downlinks = Vec::new();
+    for instance in instances {
+        if let Some(filter) = source_filter {
+            if filter != instance.name {
+                continue;
+            }
+        }
+        match yamcs_client.list_objects(&instance.name, bucket).await {
+            Ok(response) => {
+                for object in &response.objects {
+                    downlinks.push(file_transfer::bucket_object_to_file_downlink(
+                        object,
+                        &instance.name,
+                    ));
+                }
+            }
+            Err(e) => {
+                // A missing bucket is expected if the instance's config doesn't use
+                // FprimeFilePacketService; don't fail the whole listing over it.
+                debug!(error = %e, instance = %instance.name, bucket = %bucket, "Failed to list downlink bucket objects");
+            }
+        }
+    }
+    downlinks
 }
 
 #[tonic::async_trait]
@@ -303,11 +369,16 @@ impl Api for YamcsApiService {
         &self,
         _request: Request<()>,
     ) -> Result<Response<FileTransferState>, Status> {
-        // Return empty file transfer state (stub)
-        debug!("File transfer state requested (stub - returning empty state)");
+        let downlink_completed = self.list_completed_downlinks(None).await;
+        debug!(
+            count = downlink_completed.len(),
+            "File transfer state requested"
+        );
         Ok(Response::new(FileTransferState {
-            downlink_completed: vec![],
+            downlink_completed,
             uplink_completed: vec![],
+            // No in-progress transfer tracking without packet-level interval tracking
+            // (Phase 3); a bucket listing can only ever observe completed transfers.
             downlink_in_progress: vec![],
             uplink_in_progress: vec![],
         }))
@@ -819,20 +890,52 @@ impl Api for YamcsApiService {
 
     type SubFileDownlinkStream = ReceiverStream<Result<FileDownlink, Status>>;
 
+    /// Polls the downlink bucket(s) and emits each completed downlink once, the first time it
+    /// is observed. There's no push notification for bucket contents in YAMCS, so this is
+    /// necessarily poll-based.
     async fn sub_file_downlink(
         &self,
-        _request: Request<BusFilter>,
+        request: Request<BusFilter>,
     ) -> Result<Response<Self::SubFileDownlinkStream>, Status> {
-        // Create channel for file downlink stream (stub - no data sent)
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let filter = request.into_inner();
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        let service_client = self.yamcs_client.clone();
+        let bucket = self.downlink_bucket.clone();
+        let source_filter = if filter.source.is_empty() {
+            None
+        } else {
+            Some(filter.source.clone())
+        };
 
         tokio::spawn(async move {
-            // Keep channel open until receiver is dropped
-            tx.closed().await;
-            debug!("File downlink subscription closed by client");
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let downlinks = list_completed_downlinks_for(&service_client, &bucket, source_filter.as_deref()).await;
+                        for downlink in downlinks {
+                            let key = (downlink.source.clone(), downlink.uid.clone());
+                            if seen.insert(key) {
+                                if tx.send(Ok(downlink)).await.is_err() {
+                                    debug!("File downlink subscription closed by client");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    _ = tx.closed() => {
+                        debug!("File downlink subscription closed by client");
+                        return;
+                    }
+                }
+            }
         });
 
-        debug!("File downlink subscription established (stub)");
+        info!("File downlink subscription established");
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -857,20 +960,44 @@ impl Api for YamcsApiService {
 
     type SubFileTransferStream = ReceiverStream<Result<FileTransferState, Status>>;
 
+    /// Polls the downlink bucket(s) and pushes a full `FileTransferState` snapshot on every
+    /// tick, matching what the VS Code Downlink pane expects (it treats each message as
+    /// authoritative, not incremental).
     async fn sub_file_transfer(
         &self,
         _request: Request<()>,
     ) -> Result<Response<Self::SubFileTransferStream>, Status> {
-        // Create channel for file transfer stream (stub - no data sent)
         let (tx, rx) = tokio::sync::mpsc::channel(1);
 
+        let yamcs_client = self.yamcs_client.clone();
+        let bucket = self.downlink_bucket.clone();
+
         tokio::spawn(async move {
-            // Keep channel open until receiver is dropped
-            tx.closed().await;
-            debug!("File transfer subscription closed by client");
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let downlink_completed = list_completed_downlinks_for(&yamcs_client, &bucket, None).await;
+                        let state = FileTransferState {
+                            downlink_completed,
+                            uplink_completed: vec![],
+                            downlink_in_progress: vec![],
+                            uplink_in_progress: vec![],
+                        };
+                        if tx.send(Ok(state)).await.is_err() {
+                            debug!("File transfer subscription closed by client");
+                            return;
+                        }
+                    }
+                    _ = tx.closed() => {
+                        debug!("File transfer subscription closed by client");
+                        return;
+                    }
+                }
+            }
         });
 
-        debug!("File transfer subscription established (stub)");
+        info!("File transfer subscription established");
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
