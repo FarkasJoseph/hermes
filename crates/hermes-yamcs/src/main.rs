@@ -1,4 +1,5 @@
 mod convert;
+mod file_transfer;
 mod service;
 
 use clap::Parser;
