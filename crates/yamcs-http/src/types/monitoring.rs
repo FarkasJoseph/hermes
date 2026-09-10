@@ -285,6 +285,17 @@ pub enum ReplayState {
     Paused,
 }
 
+/// Request to subscribe to raw packet updates
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribePacketsRequest {
+    pub instance: String,
+    /// Either `processor` or `stream` should be set, not both.
+    pub processor: Option<String>,
+    pub stream: Option<String>,
+}
+
 /// Options for querying packets
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -312,16 +323,26 @@ pub struct ListPacketsResponse {
 }
 
 /// Packet information
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Packet {
-    pub id: NamedObjectId,
+    #[serde(default)]
+    pub id: Option<NamedObjectId>,
+    #[serde(default)]
     pub reception_time: String,
+    #[serde(default)]
     pub earth_reception_time: String,
+    #[serde(default)]
     pub generation_time: String,
+    #[serde(default)]
     pub sequence_number: u32,
+    /// Base64-encoded raw packet bytes.
+    #[serde(default)]
     pub packet: String,
+    #[serde(default)]
     pub size: u32,
+    #[serde(default)]
     pub link: String,
 }
 
@@ -487,4 +508,54 @@ pub struct StreamCommandIndexOptions {
     pub start: Option<String>,
     pub stop: Option<String>,
     pub merge_time: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// YAMCS sends `mapping`/`info` once, immediately after subscribing; every value in
+    /// subsequent messages carries only `numericId`, with `id`, `rawValue`, `engValue`,
+    /// `acquisitionStatus`, `monitoringResult`, `alarmRange` and `expireMillis` all omitted
+    /// (proto3 JSON omits fields at default value).
+    #[test]
+    fn parameter_value_deserializes_with_only_numeric_id() {
+        let json = r#"{"numericId": 42}"#;
+        let value: ParameterValue = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(value.numeric_id, 42);
+        assert!(value.id.is_none());
+        assert!(value.raw_value.is_none());
+        assert!(value.eng_value.is_none());
+        assert_eq!(value.acquisition_time, "");
+        assert!(value.alarm_range.is_empty());
+        assert_eq!(value.expire_millis, 0);
+    }
+
+    /// The first `SubscribeParametersData` after subscribing carries `mapping` (numericId ->
+    /// name) and `info`; a subsequent message's values then resolve via that map.
+    #[test]
+    fn subscribe_parameters_data_carries_mapping_and_resolves_by_numeric_id() {
+        let json = r#"{
+            "mapping": {"42": {"name": "/BigData/bigDataComponent/Counter"}},
+            "values": [{"numericId": 42, "engValue": {"type": "SINT32", "sint32Value": 7}}]
+        }"#;
+        let data: SubscribeParametersData = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(data.mapping.len(), 1);
+        let name = &data.mapping.get(&42).expect("mapping for id 42").name;
+        assert_eq!(name, "/BigData/bigDataComponent/Counter");
+        assert_eq!(data.values.len(), 1);
+        assert_eq!(data.values[0].numeric_id, 42);
+        assert!(data.values[0].id.is_none());
+    }
+
+    /// Raw packet subscription messages carry base64-encoded binary plus metadata; missing
+    /// fields should not fail deserialization.
+    #[test]
+    fn packet_deserializes_with_missing_optional_fields() {
+        let json = r#"{"packet": "AAECAw==", "size": 4}"#;
+        let packet: Packet = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(packet.packet, "AAECAw==");
+        assert_eq!(packet.size, 4);
+        assert!(packet.id.is_none());
+    }
 }
