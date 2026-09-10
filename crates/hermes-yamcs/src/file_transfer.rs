@@ -5,7 +5,7 @@
 //! bucket objects into Hermes `FileDownlink` records, and separately tracks the byte ranges
 //! observed in raw file packets without holding onto their payloads (see `IntervalTracker`).
 
-use hermes_pb::{FileDownlink, FileDownlinkChunk, FileDownlinkCompletionStatus};
+use hermes_pb::{FileDownlink, FileDownlinkChunk, FileDownlinkCompletionStatus, FileTransfer};
 use prost_types::Timestamp;
 
 /// Default bucket name used by `FprimeFilePacketService` for downlinked files, per F8.
@@ -260,6 +260,133 @@ pub fn parse_file_packet(data: &[u8]) -> Option<FilePacket> {
     }
 }
 
+/// State of a single in-flight (or just-ended) file transfer, tracked from raw packets.
+#[derive(Debug, Clone)]
+pub struct TransferRecord {
+    pub source_path: String,
+    pub destination_path: String,
+    pub total_size: u32,
+    pub tracker: IntervalTracker,
+    /// Set once an END packet has been seen. The transfer is not removed immediately on END
+    /// because the bucket object (written by YAMCS once the checksum passes) may take a
+    /// moment to appear; `Phase 3.3` join logic waits a grace period before concluding the
+    /// transfer failed.
+    pub ended_at: Option<std::time::Instant>,
+}
+
+/// Tracks in-flight file transfers per YAMCS instance from raw packet intervals, without
+/// reassembling file content (see module docs and the plan's "Deferred: partial
+/// reconstruction" section). Shared across the packet-subscription task and the RPCs that
+/// report transfer state.
+#[derive(Debug, Clone, Default)]
+pub struct TransferTracker {
+    // Keyed by (instance, destination_path). A real deployment could see multiple concurrent
+    // transfers per instance, so destination path (not just instance) disambiguates them.
+    transfers: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), TransferRecord>>>,
+}
+
+impl TransferTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Handle a parsed file packet observed on `instance`. Unknown/out-of-order sequences
+    /// (e.g. a DATA or END with no matching START, which can happen if the subscription
+    /// started mid-transfer) are tolerated: DATA/END packets with no existing record are
+    /// dropped rather than erroring, since without a START we don't know the total size.
+    pub fn handle_packet(&self, instance: &str, packet: FilePacket) {
+        let mut transfers = self.transfers.lock().expect("transfer tracker mutex poisoned");
+        match packet {
+            FilePacket::Start {
+                total_size,
+                source_path,
+                destination_path,
+                ..
+            } => {
+                let key = (instance.to_string(), destination_path.clone());
+                transfers.insert(
+                    key,
+                    TransferRecord {
+                        source_path,
+                        destination_path,
+                        total_size,
+                        tracker: IntervalTracker::new(),
+                        ended_at: None,
+                    },
+                );
+            }
+            FilePacket::Data { offset, length, .. } => {
+                // We don't know the destination path from a DATA packet alone, so find the
+                // (should be unique) in-flight transfer for *this instance* that hasn't ended.
+                if let Some(record) = transfers
+                    .iter_mut()
+                    .find(|((inst, _), r)| inst == instance && r.ended_at.is_none())
+                    .map(|(_, r)| r)
+                {
+                    record.tracker.record(offset as u64, length as u64);
+                }
+            }
+            FilePacket::End { .. } => {
+                if let Some(record) = transfers
+                    .iter_mut()
+                    .find(|((inst, _), r)| inst == instance && r.ended_at.is_none())
+                    .map(|(_, r)| r)
+                {
+                    record.ended_at = Some(std::time::Instant::now());
+                }
+            }
+            FilePacket::Cancel { .. } => {
+                transfers.retain(|_, r| r.ended_at.is_some());
+            }
+        }
+    }
+
+    /// Snapshot of transfers still in flight (no END seen yet), as `FileTransfer` records for
+    /// `FileTransferState::downlink_in_progress`.
+    pub fn in_progress(&self, instance_filter: Option<&str>) -> Vec<FileTransfer> {
+        let transfers = self.transfers.lock().expect("transfer tracker mutex poisoned");
+        transfers
+            .iter()
+            .filter(|((instance, _), record)| {
+                record.ended_at.is_none()
+                    && instance_filter.is_none_or(|f| f == instance)
+            })
+            .map(|((instance, _), record)| FileTransfer {
+                uid: record.destination_path.clone(),
+                fsw_id: instance.clone(),
+                source_path: record.source_path.clone(),
+                target_path: record.destination_path.clone(),
+                size: record.total_size as u64,
+                progress: record.tracker.received_bytes(),
+            })
+            .collect()
+    }
+
+    /// Transfers that ended more than `grace_period` ago, whose gaps should be reported as
+    /// `DOWNLINK_PARTIAL` because no matching bucket object showed up (Phase 3.3: this is the
+    /// join between packet-observed gaps and the bucket as authoritative content source).
+    /// Removes them from tracking once returned so they're only reported once.
+    pub fn take_stale_partial_transfers(
+        &self,
+        grace_period: std::time::Duration,
+    ) -> Vec<(String, TransferRecord)> {
+        let mut transfers = self.transfers.lock().expect("transfer tracker mutex poisoned");
+        let stale_keys: Vec<_> = transfers
+            .iter()
+            .filter(|(_, r)| {
+                r.ended_at
+                    .is_some_and(|ended_at| ended_at.elapsed() >= grace_period)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        stale_keys
+            .into_iter()
+            .filter_map(|key| transfers.remove(&key).map(|record| (key.0, record)))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +520,130 @@ mod tests {
         data[0] = 0x00;
         data[1] = 0x01;
         assert_eq!(parse_file_packet(&data), None);
+    }
+
+    #[test]
+    fn transfer_tracker_start_data_reports_progress() {
+        let tracker = TransferTracker::new();
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::Start {
+                sequence_index: 0,
+                total_size: 200,
+                source_path: "/src".to_string(),
+                destination_path: "./dst.bin".to_string(),
+            },
+        );
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::Data {
+                sequence_index: 1,
+                offset: 0,
+                length: 100,
+            },
+        );
+        let in_progress = tracker.in_progress(None);
+        assert_eq!(in_progress.len(), 1);
+        assert_eq!(in_progress[0].size, 200);
+        assert_eq!(in_progress[0].progress, 100);
+    }
+
+    #[test]
+    fn transfer_tracker_data_is_scoped_to_its_own_instance() {
+        let tracker = TransferTracker::new();
+        for instance in ["instance-a", "instance-b"] {
+            tracker.handle_packet(
+                instance,
+                FilePacket::Start {
+                    sequence_index: 0,
+                    total_size: 200,
+                    source_path: "/src".to_string(),
+                    destination_path: "./dst.bin".to_string(),
+                },
+            );
+        }
+        // A DATA packet on instance-a must not advance instance-b's tracker.
+        tracker.handle_packet(
+            "instance-a",
+            FilePacket::Data {
+                sequence_index: 1,
+                offset: 0,
+                length: 100,
+            },
+        );
+        let in_progress = tracker.in_progress(None);
+        let a = in_progress.iter().find(|t| t.fsw_id == "instance-a").unwrap();
+        let b = in_progress.iter().find(|t| t.fsw_id == "instance-b").unwrap();
+        assert_eq!(a.progress, 100);
+        assert_eq!(b.progress, 0);
+    }
+
+    #[test]
+    fn transfer_tracker_end_removes_from_in_progress() {
+        let tracker = TransferTracker::new();
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::Start {
+                sequence_index: 0,
+                total_size: 100,
+                source_path: "/src".to_string(),
+                destination_path: "./dst.bin".to_string(),
+            },
+        );
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::End {
+                sequence_index: 1,
+                checksum: 0,
+            },
+        );
+        assert!(tracker.in_progress(None).is_empty());
+    }
+
+    #[test]
+    fn transfer_tracker_stale_partial_only_after_grace_period() {
+        let tracker = TransferTracker::new();
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::Start {
+                sequence_index: 0,
+                total_size: 100,
+                source_path: "/src".to_string(),
+                destination_path: "./dst.bin".to_string(),
+            },
+        );
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::Data {
+                sequence_index: 1,
+                offset: 0,
+                length: 50,
+            },
+        );
+        tracker.handle_packet(
+            "myinstance",
+            FilePacket::End {
+                sequence_index: 2,
+                checksum: 0,
+            },
+        );
+        // Not stale yet under a long grace period.
+        assert!(
+            tracker
+                .take_stale_partial_transfers(std::time::Duration::from_secs(60))
+                .is_empty()
+        );
+        // Immediately stale under a zero grace period.
+        let stale = tracker.take_stale_partial_transfers(std::time::Duration::from_secs(0));
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].1.tracker.received_bytes(), 50);
+        assert_eq!(stale[0].1.tracker.gaps(100).len(), 1);
+        // Taken once; gone from tracking now.
+        assert!(
+            tracker
+                .take_stale_partial_transfers(std::time::Duration::from_secs(0))
+                .is_empty()
+        );
     }
 
     #[test]

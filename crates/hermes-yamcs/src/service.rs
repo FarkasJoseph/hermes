@@ -11,10 +11,16 @@ use crate::file_transfer;
 // Re-export the service trait from hermes_server
 use hermes_server::api_server::Api;
 
+/// Grace period after an END packet before an unmatched transfer is reported as
+/// DOWNLINK_PARTIAL. Gives the bucket object (written by YAMCS after checksum validation)
+/// a chance to appear before we conclude the transfer failed.
+const PARTIAL_TRANSFER_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct YamcsApiService {
     yamcs_client: Arc<YamcsClient>,
     processor: String,
     downlink_bucket: String,
+    transfer_tracker: file_transfer::TransferTracker,
 }
 
 impl YamcsApiService {
@@ -31,11 +37,81 @@ impl YamcsApiService {
         processor: String,
         downlink_bucket: String,
     ) -> Self {
-        Self {
+        let service = Self {
             yamcs_client: Arc::new(yamcs_client),
             processor,
             downlink_bucket,
-        }
+            transfer_tracker: file_transfer::TransferTracker::new(),
+        };
+        service.spawn_packet_trackers();
+        service
+    }
+
+    /// Spawn a background task per YAMCS instance that subscribes to raw packets and feeds
+    /// file-packet intervals into `transfer_tracker` (Phase 3.2). Best-effort: an instance
+    /// that fails to subscribe just won't have in-progress transfer tracking, which degrades
+    /// to the Phase 2 behavior (bucket listing only, completed transfers only).
+    fn spawn_packet_trackers(&self) {
+        let yamcs_client = self.yamcs_client.clone();
+        let processor = self.processor.clone();
+        let tracker = self.transfer_tracker.clone();
+
+        tokio::spawn(async move {
+            let instances = match yamcs_client.get_instances().await {
+                Ok(instances) => instances,
+                Err(e) => {
+                    error!(error = %e, "Failed to list YAMCS instances for packet tracking");
+                    return;
+                }
+            };
+
+            for instance in instances {
+                let yamcs_client = yamcs_client.clone();
+                let processor = processor.clone();
+                let tracker = tracker.clone();
+                let instance_name = instance.name.clone();
+
+                tokio::spawn(async move {
+                    use yamcs_http::websocket::ConnectionState;
+                    if !matches!(
+                        yamcs_client.websocket_state().await,
+                        Some(ConnectionState::Connected)
+                    ) {
+                        if let Err(e) = yamcs_client.connect_websocket().await {
+                            error!(error = %e, instance = %instance_name, "Failed to connect WebSocket for packet tracking");
+                            return;
+                        }
+                    }
+
+                    let request = yamcs_http::types::monitoring::SubscribePacketsRequest {
+                        instance: instance_name.clone(),
+                        processor: Some(processor),
+                        stream: None,
+                    };
+
+                    match yamcs_client.subscribe_packets(&request).await {
+                        Ok(mut packet_stream) => {
+                            info!(instance = %instance_name, "Packet subscription established for transfer tracking");
+                            while let Some(packet) = packet_stream.recv().await {
+                                let Ok(raw) = base64::Engine::decode(
+                                    &base64::engine::general_purpose::STANDARD,
+                                    &packet.packet,
+                                ) else {
+                                    continue;
+                                };
+                                if let Some(file_packet) = file_transfer::parse_file_packet(&raw) {
+                                    tracker.handle_packet(&instance_name, file_packet);
+                                }
+                            }
+                            warn!(instance = %instance_name, "Packet subscription closed");
+                        }
+                        Err(e) => {
+                            error!(error = %e, instance = %instance_name, "Failed to subscribe to packets for transfer tracking");
+                        }
+                    }
+                });
+            }
+        });
     }
 
     /// List completed downlinks across all YAMCS instances, by listing objects in the
@@ -45,6 +121,21 @@ impl YamcsApiService {
     async fn list_completed_downlinks(&self, source_filter: Option<&str>) -> Vec<FileDownlink> {
         list_completed_downlinks_for(&self.yamcs_client, &self.downlink_bucket, source_filter)
             .await
+    }
+
+    /// Transfers whose END packet was observed more than `PARTIAL_TRANSFER_GRACE_PERIOD` ago
+    /// with no matching bucket object: per F8, YAMCS discards the partial entirely on
+    /// checksum failure, so this is the only place that failure is observable at all. Reports
+    /// `DOWNLINK_PARTIAL` with exactly the gaps the packet-level tracker saw (Phase 3.3).
+    ///
+    /// Note this consumes the stale entries (see `TransferTracker::take_stale_partial_transfers`),
+    /// so each partial transfer is only reported once across whichever RPC observes it first.
+    fn take_partial_downlinks(&self) -> Vec<FileDownlink> {
+        self.transfer_tracker
+            .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
+            .into_iter()
+            .map(|(instance, record)| partial_downlink_from_record(instance, record))
+            .collect()
     }
 
     /// Extract FSW ID (YAMCS instance name) from gRPC request metadata
@@ -73,6 +164,30 @@ impl YamcsApiService {
                 })
             }
         }
+    }
+}
+
+/// Build a `DOWNLINK_PARTIAL` `FileDownlink` from a transfer record that ended with no
+/// matching bucket object appearing within the grace period. Free function so it can be
+/// shared between the `sub_file_transfer`/`sub_file_downlink` polling tasks and the
+/// `get_file_transfer_state`/`YamcsApiService::take_partial_downlinks` instance method.
+fn partial_downlink_from_record(
+    instance: String,
+    record: file_transfer::TransferRecord,
+) -> FileDownlink {
+    FileDownlink {
+        uid: record.destination_path.clone(),
+        time_start: None,
+        time_end: None,
+        status: FileDownlinkCompletionStatus::DownlinkPartial as i32,
+        source: instance,
+        source_path: record.source_path,
+        destination_path: record.destination_path.clone(),
+        file_path: record.destination_path,
+        missing_chunks: record.tracker.gaps(record.total_size as u64),
+        duplicate_chunks: vec![],
+        size: record.total_size as u64,
+        metadata: Default::default(),
     }
 }
 
@@ -369,17 +484,18 @@ impl Api for YamcsApiService {
         &self,
         _request: Request<()>,
     ) -> Result<Response<FileTransferState>, Status> {
-        let downlink_completed = self.list_completed_downlinks(None).await;
+        let mut downlink_completed = self.list_completed_downlinks(None).await;
+        downlink_completed.extend(self.take_partial_downlinks());
+        let downlink_in_progress = self.transfer_tracker.in_progress(None);
         debug!(
-            count = downlink_completed.len(),
+            completed = downlink_completed.len(),
+            in_progress = downlink_in_progress.len(),
             "File transfer state requested"
         );
         Ok(Response::new(FileTransferState {
             downlink_completed,
             uplink_completed: vec![],
-            // No in-progress transfer tracking without packet-level interval tracking
-            // (Phase 3); a bucket listing can only ever observe completed transfers.
-            downlink_in_progress: vec![],
+            downlink_in_progress,
             uplink_in_progress: vec![],
         }))
     }
@@ -902,6 +1018,7 @@ impl Api for YamcsApiService {
 
         let service_client = self.yamcs_client.clone();
         let bucket = self.downlink_bucket.clone();
+        let tracker = self.transfer_tracker.clone();
         let source_filter = if filter.source.is_empty() {
             None
         } else {
@@ -916,7 +1033,14 @@ impl Api for YamcsApiService {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let downlinks = list_completed_downlinks_for(&service_client, &bucket, source_filter.as_deref()).await;
+                        let mut downlinks = list_completed_downlinks_for(&service_client, &bucket, source_filter.as_deref()).await;
+                        downlinks.extend(
+                            tracker
+                                .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
+                                .into_iter()
+                                .filter(|(instance, _)| source_filter.as_deref().is_none_or(|f| f == instance))
+                                .map(|(instance, record)| partial_downlink_from_record(instance, record)),
+                        );
                         for downlink in downlinks {
                             let key = (downlink.source.clone(), downlink.uid.clone());
                             if seen.insert(key) {
@@ -971,17 +1095,25 @@ impl Api for YamcsApiService {
 
         let yamcs_client = self.yamcs_client.clone();
         let bucket = self.downlink_bucket.clone();
+        let tracker = self.transfer_tracker.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let downlink_completed = list_completed_downlinks_for(&yamcs_client, &bucket, None).await;
+                        let mut downlink_completed = list_completed_downlinks_for(&yamcs_client, &bucket, None).await;
+                        downlink_completed.extend(
+                            tracker
+                                .take_stale_partial_transfers(PARTIAL_TRANSFER_GRACE_PERIOD)
+                                .into_iter()
+                                .map(|(instance, record)| partial_downlink_from_record(instance, record)),
+                        );
+                        let downlink_in_progress = tracker.in_progress(None);
                         let state = FileTransferState {
                             downlink_completed,
                             uplink_completed: vec![],
-                            downlink_in_progress: vec![],
+                            downlink_in_progress,
                             uplink_in_progress: vec![],
                         };
                         if tx.send(Ok(state)).await.is_err() {
