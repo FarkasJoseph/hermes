@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -278,8 +279,33 @@ func (t *SQLTemplates) insertValue(tx Tx, extraColumn *ExtraColumn, time *pb.Tim
 
 		return nil
 	case *pb.Value_R:
-		telValues["valueType"] = "bytes"
-		telValues["bytes"] = valueTy.R.Value
+		// U8/I8 is the "genuinely opaque blob" fallback kind (see hermes-yamcs's convert.rs) —
+		// keep those as a single raw bytes row. Any other kind is a "!binary" array whose real
+		// element type is known, so decode and expand it like Value_A, one row per element,
+		// instead of leaving it as an unplottable blob.
+		if valueTy.R.Kind == pb.NumberKind_NUMBER_U8 || valueTy.R.Kind == pb.NumberKind_NUMBER_I8 {
+			telValues["valueType"] = "bytes"
+			telValues["bytes"] = valueTy.R.Value
+			break
+		}
+
+		decoded, err := pb.ValueToAny(value, pb.ConversionOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to decode bytes value: %w", err)
+		}
+		elems := reflect.ValueOf(decoded)
+		for i := range elems.Len() {
+			elemValue, err := pb.AnyToValue(elems.Index(i).Interface())
+			if err != nil {
+				return fmt.Errorf("failed to convert bytes element [%d]: %w", i, err)
+			}
+			idxPath := path + "[" + strconv.FormatUint(uint64(i), 10) + "]"
+			if err := t.insertValue(tx, extraColumn, time, telemetryDefId, source, labels, idxPath, elemValue); err != nil {
+				return fmt.Errorf("failed to insert bytes element [%d]: %w", i, err)
+			}
+		}
+
+		return nil
 	}
 
 	if extraColumn != nil {
