@@ -152,10 +152,89 @@ pub fn yamcs_event_to_hermes(
     Ok(Some(sourced_event))
 }
 
+/// Which F Prime numeric type (if any) a "!binary" value's raw bytes represent, so it can be
+/// surfaced as a typed `BytesValue` instead of raw `U8` bytes. Built from a parameter's MDB
+/// definition (see [`binary_type_hints_for_parameter`]) and threaded through
+/// [`yamcs_value_to_hermes`], since the hint lives on the *type*, not the streamed value.
+#[derive(Debug, Default, Clone)]
+pub struct BinaryTypeHints {
+    /// Numeric kind for this value itself, if it is (or resolves to) a "!binary" blob.
+    own_kind: Option<NumberKind>,
+    /// Hints for this value's members, if it's an aggregate. Only one level deep today: a
+    /// member that's itself a nested aggregate with its own "!binary" members isn't resolved.
+    members: HashMap<String, BinaryTypeHints>,
+}
+
+/// Map an F Prime primitive type name (as named by fprime-xtce's "fprime:elementType" Alias)
+/// to the matching Hermes `NumberKind`.
+fn numeric_kind_from_fprime_name(name: &str) -> Option<NumberKind> {
+    Some(match name {
+        "U8" => NumberKind::NumberU8,
+        "I8" => NumberKind::NumberI8,
+        "U16" => NumberKind::NumberU16,
+        "I16" => NumberKind::NumberI16,
+        "U32" => NumberKind::NumberU32,
+        "I32" => NumberKind::NumberI32,
+        "U64" => NumberKind::NumberU64,
+        "I64" => NumberKind::NumberI64,
+        "F32" => NumberKind::NumberF32,
+        "F64" => NumberKind::NumberF64,
+        _ => return None,
+    })
+}
+
+/// The `fprime:elementType` Alias fprime-xtce tags a "!binary" BinaryParameterType with (see
+/// fprime-xtce's `BINARY_ELEMENT_TYPE_ALIAS_NAMESPACE`).
+const FPRIME_ELEMENT_TYPE_ALIAS_NAMESPACE: &str = "fprime:elementType";
+
+fn numeric_kind_from_aliases(
+    aliases: &[yamcs_http::types::common::NamedObjectId],
+) -> Option<NumberKind> {
+    aliases
+        .iter()
+        .find(|a| a.namespace.as_deref() == Some(FPRIME_ELEMENT_TYPE_ALIAS_NAMESPACE))
+        .and_then(|a| numeric_kind_from_fprime_name(&a.name))
+}
+
+/// Build [`BinaryTypeHints`] for a parameter from its MDB definition, so "!binary" members (or
+/// a bare "!binary" parameter) can be tagged with their real numeric element type.
+pub fn binary_type_hints_for_parameter(
+    parameter: &yamcs_http::types::mdb::Parameter,
+) -> BinaryTypeHints {
+    let Some(param_type) = &parameter.parameter_type else {
+        return BinaryTypeHints::default();
+    };
+    let members = param_type
+        .member
+        .as_ref()
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|m| {
+                    numeric_kind_from_aliases(&m.alias).map(|kind| {
+                        (
+                            m.name.clone(),
+                            BinaryTypeHints {
+                                own_kind: Some(kind),
+                                members: HashMap::new(),
+                            },
+                        )
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    BinaryTypeHints {
+        own_kind: numeric_kind_from_aliases(&param_type.alias),
+        members,
+    }
+}
+
 /// Convert YAMCS ParameterValue to Hermes SourcedTelemetry
 pub fn yamcs_param_to_hermes(
     param: &yamcs_http::types::monitoring::ParameterValue,
     filter: &BusFilter,
+    binary_hints: Option<&BinaryTypeHints>,
 ) -> Result<Option<SourcedTelemetry>, Status> {
     // Resolve parameter name: prefer id.name if present, otherwise skip (numeric_id will be resolved by caller)
     let param_name = match &param.id {
@@ -183,9 +262,9 @@ pub fn yamcs_param_to_hermes(
 
     // Convert YAMCS value to Hermes value (prefer eng_value, fall back to raw_value)
     let value = if let Some(eng_val) = &param.eng_value {
-        yamcs_value_to_hermes(eng_val)?
+        yamcs_value_to_hermes(eng_val, binary_hints)?
     } else if let Some(raw_val) = &param.raw_value {
-        yamcs_value_to_hermes(raw_val)?
+        yamcs_value_to_hermes(raw_val, binary_hints)?
     } else {
         // No value available; skip this parameter
         debug!(
@@ -238,7 +317,10 @@ fn split_qualified_name(qualified_name: &str) -> (String, String) {
 }
 
 /// Convert YAMCS Value to Hermes Value
-fn yamcs_value_to_hermes(yamcs_value: &yamcs_http::Value) -> Result<Value, Status> {
+fn yamcs_value_to_hermes(
+    yamcs_value: &yamcs_http::Value,
+    hints: Option<&BinaryTypeHints>,
+) -> Result<Value, Status> {
     match yamcs_value {
         yamcs_http::Value::Float { float_value } => Ok(Value {
             value: Some(value::Value::F(*float_value as f64)),
@@ -269,10 +351,16 @@ fn yamcs_value_to_hermes(yamcs_value: &yamcs_http::Value) -> Result<Value, Statu
             let decoded =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, binary_value)
                     .map_err(|e| Status::invalid_argument(format!("Invalid base64: {}", e)))?;
+            // A "!binary" array/member is tagged (via fprime-xtce's AliasSet) with the F Prime
+            // numeric type its bytes actually represent; `hints` carries that back from the MDB.
+            // Absent a hint (untagged binary, or an older dictionary), fall back to raw U8 bytes.
+            let numeric_kind = hints
+                .and_then(|h| h.own_kind)
+                .unwrap_or(NumberKind::NumberU8);
             Ok(Value {
                 value: Some(value::Value::R(BytesValue {
-                    kind: NumberKind::NumberU8 as i32,
-                    big_endian: false,
+                    kind: numeric_kind as i32,
+                    big_endian: true,
                     value: decoded,
                 })),
             })
@@ -288,7 +376,8 @@ fn yamcs_value_to_hermes(yamcs_value: &yamcs_http::Value) -> Result<Value, Statu
             let mut obj = HashMap::new();
             for (i, name) in aggregate_value.name.iter().enumerate() {
                 if let Some(val) = aggregate_value.value.get(i) {
-                    obj.insert(name.clone(), yamcs_value_to_hermes(val)?);
+                    let member_hints = hints.and_then(|h| h.members.get(name.as_str()));
+                    obj.insert(name.clone(), yamcs_value_to_hermes(val, member_hints)?);
                 }
             }
             Ok(Value {
@@ -296,7 +385,10 @@ fn yamcs_value_to_hermes(yamcs_value: &yamcs_http::Value) -> Result<Value, Statu
             })
         }
         yamcs_http::Value::Array { array_value } => {
-            let values: Result<Vec<_>, _> = array_value.iter().map(yamcs_value_to_hermes).collect();
+            let values: Result<Vec<_>, _> = array_value
+                .iter()
+                .map(|v| yamcs_value_to_hermes(v, None))
+                .collect();
             Ok(Value {
                 value: Some(value::Value::A(ArrayValue { value: values? })),
             })
@@ -343,5 +435,195 @@ pub fn yamcs_instance_to_fsw(instance: &yamcs_http::types::system::Instance) -> 
         forwards: vec![],
         capabilities,
         dictionary: instance.name.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yamcs_http::types::common::NamedObjectId;
+    use yamcs_http::types::mdb::{Parameter, ParameterMember, ParameterType};
+
+    fn binary_value(base64: &str) -> yamcs_http::Value {
+        yamcs_http::Value::Binary {
+            binary_value: base64.to_string(),
+        }
+    }
+
+    fn fprime_element_type_alias(name: &str) -> NamedObjectId {
+        NamedObjectId {
+            namespace: Some(FPRIME_ELEMENT_TYPE_ALIAS_NAMESPACE.to_string()),
+            name: name.to_string(),
+        }
+    }
+
+    fn parameter_type(
+        alias: Vec<NamedObjectId>,
+        member: Option<Vec<ParameterMember>>,
+    ) -> ParameterType {
+        ParameterType {
+            name: "T".to_string(),
+            qualified_name: "/T".to_string(),
+            short_description: None,
+            long_description: None,
+            alias,
+            eng_type: "aggregate".to_string(),
+            array_info: None,
+            data_encoding: None,
+            unit_set: None,
+            default_alarm: None,
+            context_alarm: vec![],
+            enum_values: vec![],
+            enum_ranges: vec![],
+            absolute_time_info: None,
+            member,
+            signed: None,
+            size_in_bits: None,
+            one_string_value: None,
+            zero_string_value: None,
+            used_by: None,
+            initial_value: None,
+            raw_valid_range: None,
+            eng_valid_range: None,
+        }
+    }
+
+    #[test]
+    fn numeric_kind_from_fprime_name_covers_every_hermes_number_kind() {
+        for (name, kind) in [
+            ("U8", NumberKind::NumberU8),
+            ("I8", NumberKind::NumberI8),
+            ("U16", NumberKind::NumberU16),
+            ("I16", NumberKind::NumberI16),
+            ("U32", NumberKind::NumberU32),
+            ("I32", NumberKind::NumberI32),
+            ("U64", NumberKind::NumberU64),
+            ("I64", NumberKind::NumberI64),
+            ("F32", NumberKind::NumberF32),
+            ("F64", NumberKind::NumberF64),
+        ] {
+            assert_eq!(numeric_kind_from_fprime_name(name), Some(kind));
+        }
+        assert_eq!(numeric_kind_from_fprime_name("bool"), None);
+    }
+
+    #[test]
+    fn binary_type_hints_for_bare_binary_parameter() {
+        let parameter = Parameter {
+            name: "CostMap".to_string(),
+            qualified_name: "/CostMap".to_string(),
+            alias: None,
+            short_description: None,
+            long_description: None,
+            data_source: None,
+            parameter_type: Some(Box::new(parameter_type(
+                vec![fprime_element_type_alias("F32")],
+                None,
+            ))),
+            used_by: None,
+            path: None,
+        };
+
+        let hints = binary_type_hints_for_parameter(&parameter);
+        assert_eq!(hints.own_kind, Some(NumberKind::NumberF32));
+        assert!(hints.members.is_empty());
+    }
+
+    #[test]
+    fn binary_type_hints_for_aggregate_member() {
+        let data_member = ParameterMember {
+            name: "data".to_string(),
+            member_type: Box::new(parameter_type(vec![], None)),
+            initial_value: None,
+            short_description: None,
+            long_description: None,
+            alias: vec![fprime_element_type_alias("U8")],
+        };
+        let parameter = Parameter {
+            name: "MapStream".to_string(),
+            qualified_name: "/MapStream".to_string(),
+            alias: None,
+            short_description: None,
+            long_description: None,
+            data_source: None,
+            parameter_type: Some(Box::new(parameter_type(vec![], Some(vec![data_member])))),
+            used_by: None,
+            path: None,
+        };
+
+        let hints = binary_type_hints_for_parameter(&parameter);
+        assert_eq!(hints.own_kind, None);
+        let data_hints = hints.members.get("data").expect("data member hints");
+        assert_eq!(data_hints.own_kind, Some(NumberKind::NumberU8));
+    }
+
+    #[test]
+    fn binary_type_hints_absent_when_untagged() {
+        let parameter = Parameter {
+            name: "Plain".to_string(),
+            qualified_name: "/Plain".to_string(),
+            alias: None,
+            short_description: None,
+            long_description: None,
+            data_source: None,
+            parameter_type: Some(Box::new(parameter_type(vec![], None))),
+            used_by: None,
+            path: None,
+        };
+        assert_eq!(binary_type_hints_for_parameter(&parameter).own_kind, None);
+    }
+
+    #[test]
+    fn binary_value_uses_hinted_numeric_kind() {
+        let hints = BinaryTypeHints {
+            own_kind: Some(NumberKind::NumberF32),
+            members: HashMap::new(),
+        };
+        let value = yamcs_value_to_hermes(&binary_value("AAAAAA=="), Some(&hints)).unwrap();
+        let Some(value::Value::R(bytes)) = value.value else {
+            panic!("expected a bytes value");
+        };
+        assert_eq!(bytes.kind, NumberKind::NumberF32 as i32);
+    }
+
+    #[test]
+    fn binary_value_without_hints_defaults_to_u8() {
+        let value = yamcs_value_to_hermes(&binary_value("AAAAAA=="), None).unwrap();
+        let Some(value::Value::R(bytes)) = value.value else {
+            panic!("expected a bytes value");
+        };
+        assert_eq!(bytes.kind, NumberKind::NumberU8 as i32);
+    }
+
+    #[test]
+    fn aggregate_member_binary_value_uses_its_own_hint() {
+        let mut member_hints = HashMap::new();
+        member_hints.insert(
+            "data".to_string(),
+            BinaryTypeHints {
+                own_kind: Some(NumberKind::NumberI16),
+                members: HashMap::new(),
+            },
+        );
+        let hints = BinaryTypeHints {
+            own_kind: None,
+            members: member_hints,
+        };
+
+        let aggregate = yamcs_http::Value::Aggregate {
+            aggregate_value: yamcs_http::types::common::AggregateValue {
+                name: vec!["data".to_string()],
+                value: vec![binary_value("AAAAAA==")],
+            },
+        };
+
+        let converted = yamcs_value_to_hermes(&aggregate, Some(&hints)).unwrap();
+        let Some(value::Value::O(obj)) = converted.value else {
+            panic!("expected an object value");
+        };
+        let Some(value::Value::R(bytes)) = obj.o.get("data").and_then(|v| v.value.clone()) else {
+            panic!("expected member 'data' to be a bytes value");
+        };
+        assert_eq!(bytes.kind, NumberKind::NumberI16 as i32);
     }
 }

@@ -33,12 +33,20 @@ const TRANSFER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// `ClearDownlinkTransferState`, matching how the completed list is meant to be resettable.
 type PartialDownlinks = Arc<std::sync::Mutex<Vec<FileDownlink>>>;
 
+/// Per-parameter "!binary" numeric-type hints, keyed by `"<instance><qualified name>"` (the
+/// qualified name always starts with "/", so no separator is needed to avoid collisions).
+/// Populated lazily (one MDB fetch per parameter, ever) since the hint comes from the
+/// parameter's *type* definition, not anything present on the streamed value itself.
+type BinaryTypeHintsCache =
+    Arc<tokio::sync::Mutex<std::collections::HashMap<String, convert::BinaryTypeHints>>>;
+
 pub struct YamcsApiService {
     yamcs_client: Arc<YamcsClient>,
     processor: String,
     downlink_bucket: String,
     transfer_tracker: file_transfer::TransferTracker,
     partial_downlinks: PartialDownlinks,
+    binary_type_hints: BinaryTypeHintsCache,
 }
 
 impl YamcsApiService {
@@ -61,6 +69,7 @@ impl YamcsApiService {
             downlink_bucket,
             transfer_tracker: file_transfer::TransferTracker::new(),
             partial_downlinks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            binary_type_hints: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         };
         service.spawn_packet_trackers();
         service
@@ -237,6 +246,32 @@ fn partial_downlink_from_record(
 }
 
 /// List completed downlinks across all YAMCS instances (or a single instance, if
+/// Look up (and cache) the "!binary" numeric-type hints for a parameter, so its value can be
+/// converted with [`convert::yamcs_param_to_hermes`]. A fetch failure (e.g. the parameter
+/// isn't in the MDB, which shouldn't happen for something we're actively subscribed to, but
+/// defensively) just means no hints - `Binary` values fall back to raw `U8` bytes, matching
+/// today's behavior.
+async fn resolve_binary_type_hints(
+    yamcs_client: &YamcsClient,
+    cache: &BinaryTypeHintsCache,
+    instance: &str,
+    qualified_name: &str,
+) -> convert::BinaryTypeHints {
+    let cache_key = format!("{instance}{qualified_name}");
+    if let Some(hints) = cache.lock().await.get(&cache_key) {
+        return hints.clone();
+    }
+    let hints = match yamcs_client.get_parameter(instance, qualified_name).await {
+        Ok(parameter) => convert::binary_type_hints_for_parameter(&parameter),
+        Err(e) => {
+            debug!(error = %e, instance = %instance, parameter = %qualified_name, "Failed to fetch parameter MDB for binary-type hints");
+            convert::BinaryTypeHints::default()
+        }
+    };
+    cache.lock().await.insert(cache_key, hints.clone());
+    hints
+}
+
 /// `source_filter` is set), by listing objects in `bucket`. Free function (rather than a
 /// method) so it can be called from a spawned task that only holds an `Arc<YamcsClient>`.
 async fn list_completed_downlinks_for(
@@ -941,6 +976,7 @@ impl Api for YamcsApiService {
         let yamcs_client = self.yamcs_client.clone();
         let processor = self.processor.clone();
         let filter_clone = filter.clone();
+        let binary_type_hints = self.binary_type_hints.clone();
 
         let instance_count = instances.len();
         let processor_name = processor.clone();
@@ -1013,6 +1049,8 @@ impl Api for YamcsApiService {
                         let tx = tx.clone();
                         let filter = filter_clone.clone();
                         let instance_name = instance.clone();
+                        let yamcs_client = yamcs_client.clone();
+                        let binary_type_hints = binary_type_hints.clone();
 
                         // Spawn a task for each instance's telemetry stream
                         subscriptions.push(tokio::spawn(async move {
@@ -1035,7 +1073,24 @@ impl Api for YamcsApiService {
                                                     param_value.id = Some(resolved_id.clone());
                                                 }
 
-                                                match convert::yamcs_param_to_hermes(&param_value, &filter) {
+                                                let binary_hints = match &param_value.id {
+                                                    Some(id) => Some(
+                                                        resolve_binary_type_hints(
+                                                            &yamcs_client,
+                                                            &binary_type_hints,
+                                                            &instance_name,
+                                                            &id.name,
+                                                        )
+                                                        .await,
+                                                    ),
+                                                    None => None,
+                                                };
+
+                                                match convert::yamcs_param_to_hermes(
+                                                    &param_value,
+                                                    &filter,
+                                                    binary_hints.as_ref(),
+                                                ) {
                                                     Ok(Some(mut hermes_telem)) => {
                                                         // Ensure source is set to the instance name
                                                         hermes_telem.source = instance_name.clone();
