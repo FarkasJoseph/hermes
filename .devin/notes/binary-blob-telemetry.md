@@ -96,19 +96,6 @@ the `U8` alias tag independently confirmed via the MDB REST API. The F32/aggrega
 are covered by the unit tests directly (didn't add a live F32 channel to `big-data` just to
 re-demonstrate what the unit tests already prove).
 
-### 4. `hermes` / `cmd/sqlrecord` (not yet on its own branch — currently on
-`fix/stable-telemetry-event-ref-ids`, needs to move)
-
-`sqlrecord` was dumping every `BytesValue` as an opaque `bytes` blob, discarding the `Kind`
-`hermes-yamcs` had already resolved (see above) — so a `!binary` numeric array (e.g.
-`FloatSamplesTlm`, F32) reached TimescaleDB as one unplottable hex blob per point, not a chart.
-
-Fix in `insertValue` (`cmd/sqlrecord/sqlhelper.go`): `Value_R` with kind U8/I8 (the opaque-blob
-fallback) still stores as raw bytes; any other kind decodes via `pb.ValueToAny` and expands into
-one row per element (`value[0]`, `value[1]`, ...), same pattern as `Value_A`. Verified live:
-`SEND_FLOAT_SAMPLES(seed=42)` now lands as `value[0]=42, value[1]=43, ...` (real `float` rows),
-not hex.
-
 ## Follow-ups / open items
 
 - **hermes-yamcs PR stack**: not yet split up for review. Probably: (1) the `yamcs-http`
