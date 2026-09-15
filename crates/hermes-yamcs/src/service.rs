@@ -10,9 +10,14 @@ use crate::convert;
 // Re-export the service trait from hermes_server
 use hermes_server::api_server::Api;
 
+/// Lazily cached per-parameter "!binary" numeric-type hints from the MDB.
+type BinaryTypeHintsCache =
+    Arc<tokio::sync::Mutex<std::collections::HashMap<String, convert::BinaryTypeHints>>>;
+
 pub struct YamcsApiService {
     yamcs_client: Arc<YamcsClient>,
     processor: String,
+    binary_type_hints: BinaryTypeHintsCache,
 }
 
 impl YamcsApiService {
@@ -20,6 +25,7 @@ impl YamcsApiService {
         Self {
             yamcs_client: Arc::new(yamcs_client),
             processor,
+            binary_type_hints: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -50,6 +56,28 @@ impl YamcsApiService {
             }
         }
     }
+}
+
+/// Look up and cache the "!binary" numeric-type hints for a parameter.
+async fn resolve_binary_type_hints(
+    yamcs_client: &YamcsClient,
+    cache: &BinaryTypeHintsCache,
+    instance: &str,
+    qualified_name: &str,
+) -> convert::BinaryTypeHints {
+    let cache_key = format!("{instance}{qualified_name}");
+    if let Some(hints) = cache.lock().await.get(&cache_key) {
+        return hints.clone();
+    }
+    let hints = match yamcs_client.get_parameter(instance, qualified_name).await {
+        Ok(parameter) => convert::binary_type_hints_for_parameter(&parameter),
+        Err(e) => {
+            debug!(error = %e, instance = %instance, parameter = %qualified_name, "Failed to fetch parameter MDB for binary-type hints");
+            convert::BinaryTypeHints::default()
+        }
+    };
+    cache.lock().await.insert(cache_key, hints.clone());
+    hints
 }
 
 #[tonic::async_trait]
@@ -674,6 +702,7 @@ impl Api for YamcsApiService {
         let yamcs_client = self.yamcs_client.clone();
         let processor = self.processor.clone();
         let filter_clone = filter.clone();
+        let binary_type_hints = self.binary_type_hints.clone();
 
         let instance_count = instances.len();
         let processor_name = processor.clone();
@@ -746,6 +775,8 @@ impl Api for YamcsApiService {
                         let tx = tx.clone();
                         let filter = filter_clone.clone();
                         let instance_name = instance.clone();
+                        let yamcs_client = yamcs_client.clone();
+                        let binary_type_hints = binary_type_hints.clone();
 
                         // Spawn a task for each instance's telemetry stream
                         subscriptions.push(tokio::spawn(async move {
@@ -768,7 +799,24 @@ impl Api for YamcsApiService {
                                                     }
                                                 }
 
-                                                match convert::yamcs_param_to_hermes(&param_value, &filter) {
+                                                let binary_hints = match &param_value.id {
+                                                    Some(id) => Some(
+                                                        resolve_binary_type_hints(
+                                                            &yamcs_client,
+                                                            &binary_type_hints,
+                                                            &instance_name,
+                                                            &id.name,
+                                                        )
+                                                        .await,
+                                                    ),
+                                                    None => None,
+                                                };
+
+                                                match convert::yamcs_param_to_hermes(
+                                                    &param_value,
+                                                    &filter,
+                                                    binary_hints.as_ref(),
+                                                ) {
                                                     Ok(Some(mut hermes_telem)) => {
                                                         // Ensure source is set to the instance name
                                                         hermes_telem.source = instance_name.clone();
