@@ -209,10 +209,14 @@ pub fn yamcs_param_to_hermes(
     };
     let value = yamcs_value_to_hermes(eng_val)?;
 
+    // Hermes keeps a channel's component and name as separate fields (so the UI can group by
+    // component), but YAMCS gives us both as one path, e.g. "/BigData/bigDataComponent/Counter".
+    let (component, name) = split_qualified_name(&param_name);
+
     let telem_ref = TelemetryRef {
         id: stable_id(&param_name),
-        name: param_name,
-        component: "".to_string(),
+        name,
+        component,
         dictionary: "".to_string(),
     };
 
@@ -230,6 +234,20 @@ pub fn yamcs_param_to_hermes(
     };
 
     Ok(Some(sourced_telemetry))
+}
+
+/// Split a YAMCS qualified name into component and name
+/// E.g., "/BigData/bigDataComponent/Counter" -> ("BigData/bigDataComponent", "Counter")
+fn split_qualified_name(qualified_name: &str) -> (String, String) {
+    let trimmed = qualified_name.trim_start_matches('/');
+    if let Some(last_slash) = trimmed.rfind('/') {
+        let component = trimmed[..last_slash].to_string();
+        let name = trimmed[last_slash + 1..].to_string();
+        (component, name)
+    } else {
+        // No slash found, use the whole thing as name and empty component
+        ("".to_string(), trimmed.to_string())
+    }
 }
 
 /// Convert YAMCS Value to Hermes Value
@@ -385,5 +403,19 @@ mod tests {
             stable_id("/BigData/bigDataComponent/Counter"),
             stable_id("/BigData/bigDataComponent/MapStream")
         );
+    }
+
+    #[test]
+    fn split_qualified_name_splits_on_last_slash() {
+        let (component, name) = split_qualified_name("/BigData/bigDataComponent/Counter");
+        assert_eq!(component, "BigData/bigDataComponent");
+        assert_eq!(name, "Counter");
+    }
+
+    #[test]
+    fn split_qualified_name_with_no_slash_has_empty_component() {
+        let (component, name) = split_qualified_name("Counter");
+        assert_eq!(component, "");
+        assert_eq!(name, "Counter");
     }
 }
