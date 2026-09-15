@@ -749,12 +749,25 @@ impl Api for YamcsApiService {
 
                         // Spawn a task for each instance's telemetry stream
                         subscriptions.push(tokio::spawn(async move {
+                            // Maintain numeric_id -> name mapping across messages
+                            let mut numeric_id_map: std::collections::HashMap<u32, yamcs_http::types::common::NamedObjectId> = std::collections::HashMap::new();
+
                             'outer: loop {
                                 tokio::select! {
                                     data = params_stream.recv() => {
                                         if let Some(data) = data {
+                                            // Merge any new mappings from this message
+                                            numeric_id_map.extend(data.mapping.into_iter());
+
                                             // Convert each parameter value to Hermes telemetry
-                                            for param_value in data.values {
+                                            for mut param_value in data.values {
+                                                // Resolve numeric_id to name if id is missing
+                                                if param_value.id.is_none() {
+                                                    if let Some(resolved_id) = numeric_id_map.get(&param_value.numeric_id) {
+                                                        param_value.id = Some(resolved_id.clone());
+                                                    }
+                                                }
+
                                                 match convert::yamcs_param_to_hermes(&param_value, &filter) {
                                                     Ok(Some(mut hermes_telem)) => {
                                                         // Ensure source is set to the instance name
@@ -765,10 +778,11 @@ impl Api for YamcsApiService {
                                                         }
                                                     }
                                                     Ok(None) => {
-                                                        // Filtered out
+                                                        // Filtered out or unresolved numeric_id
                                                     }
                                                     Err(e) => {
-                                                        error!(error = %e, instance = %instance_name, param = %param_value.id.name, "Failed to convert telemetry");
+                                                        let param_name = param_value.id.as_ref().map(|id| id.name.as_str()).unwrap_or("[unresolved]");
+                                                        error!(error = %e, instance = %instance_name, param = %param_name, "Failed to convert telemetry");
                                                     }
                                                 }
                                             }
