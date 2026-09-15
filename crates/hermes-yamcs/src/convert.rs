@@ -3,6 +3,7 @@ use hermes_pb::*;
 use prost_types::Timestamp;
 use std::collections::HashMap;
 use tonic::Status;
+use tracing::debug;
 
 /// Convert Hermes CommandValue to YAMCS IssueCommandOptions
 pub fn command_value_to_yamcs(
@@ -156,8 +157,17 @@ pub fn yamcs_param_to_hermes(
     param: &yamcs_http::types::monitoring::ParameterValue,
     filter: &BusFilter,
 ) -> Result<Option<SourcedTelemetry>, Status> {
-    // Build full parameter name
-    let param_name = param.id.name.clone();
+    // YAMCS only sends a channel's name the first time it reports that channel; after that it
+    // sends just a numeric id to save bandwidth, and service.rs looks the name back up before
+    // calling us. If we still get no name, the mapping for this id hasn't arrived yet (e.g. a
+    // subscription that just started) - skip for now, it resolves itself on the next update.
+    let param_name = match &param.id {
+        Some(id) => id.name.clone(),
+        None => {
+            debug!(numeric_id = param.numeric_id, "Skipping parameter value with unresolved numeric_id");
+            return Ok(None);
+        }
+    };
 
     // Apply name filter
     if !filter.names.is_empty()
@@ -170,18 +180,16 @@ pub fn yamcs_param_to_hermes(
     // Parse generation time
     let time = parse_yamcs_time(&param.generation_time)?;
 
-    // Convert YAMCS value to Hermes value
-    let value = yamcs_value_to_hermes(&param.eng_value)?;
-
-    // Build telemetry reference
-    // let telem_ref = TelemetryRef {
-    //     instance_id: String::new(), // TODO: populate from YAMCS instance
-    //     qualified_name: param_name.clone(),
-    // };
+    let Some(eng_val) = &param.eng_value else {
+        // No value available; skip this parameter
+        debug!(numeric_id = param.numeric_id, "Skipping parameter with no value");
+        return Ok(None);
+    };
+    let value = yamcs_value_to_hermes(eng_val)?;
 
     let telem_ref = TelemetryRef {
         id: 0,
-        name: "".to_string(),
+        name: param_name,
         component: "".to_string(),
         dictionary: "".to_string(),
     };
