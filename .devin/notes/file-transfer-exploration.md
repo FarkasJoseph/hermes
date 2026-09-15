@@ -97,10 +97,33 @@ numeric-id fix lands separately.
    now appears and all tests run under it. Sequenced last because it's the first point at which
    all the files it touches (`dp_container.rs` included) actually exist.
 
+7. **Fix Bucket/BucketObject 'size' JSON deserialization** — YAMCS renders 64-bit integers as
+   JSON strings, but `size`/`maxSize` expected bare numbers, so `list_objects` silently failed
+   and looked exactly like "bucket not configured" (a swallowed debug log). Also fixes the real
+   field being `maxObjects`, not `maxNumObjects`. Found by pointing the bridge at a live YAMCS
+   5.12.0 server; tests use response bodies captured verbatim from it.
+
+8. **Fix two transfer-reporting bugs found by watching a real lossy downlink** — found by
+   actually sending a 25 MB file over a lossy link, not reachable from unit tests alone:
+   - A transfer that lost its END packet (just another packet, can be dropped like any other)
+     never left the in-progress list and hung in the UI forever. Fixed with a stall timeout:
+     no packets for 10s finalizes the transfer as `DOWNLINK_PARTIAL` using whatever gaps were
+     observed.
+   - Partial transfers were reported once and then vanished, since `FileTransferState` is a
+     full snapshot the client replaces wholesale every poll. Now retained and included in every
+     later snapshot, clearable via `ClearDownlinkTransferState` (previously a no-op).
+
+9. **Fix nonsensical downlink timestamps in the UI** — the client renders a missing timestamp
+   as "now", so leaving `time_start` empty made bucket-derived files show an ever-increasing
+   start time against a fixed end time (duration going more negative every refresh), and made
+   partial transfers show a duration of exactly 0 (both timestamps empty, so they're equal).
+   Packet-tracked transfers now report the real observed start/last-packet times; bucket-derived
+   ones report `start == end` (an honest "unknown duration" instead of a misleading one).
+
 ## Test coverage
 
-21 unit tests in `hermes-yamcs` (file transfer, interval tracking, packet parsing, DP container
-parsing), 11 in `yamcs-http` (bucket types, packet subscription types). All independently
+22 unit tests in `hermes-yamcs` (file transfer, interval tracking, packet parsing, DP container
+parsing), 13 in `yamcs-http` (bucket types, packet subscription types). All independently
 verified against real captured/live data where it mattered, not just internal consistency — see
 above for specifics.
 
