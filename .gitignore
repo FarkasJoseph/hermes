@@ -80,3 +80,6 @@ venv/
 
 # AI
 CLAUDE.md
+
+# Untracked planning notes (considered-but-not-done decisions, etc.) - not meant to be shared
+.devin/planning/
