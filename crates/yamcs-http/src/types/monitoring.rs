@@ -488,3 +488,42 @@ pub struct StreamCommandIndexOptions {
     pub stop: Option<String>,
     pub merge_time: Option<i64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// YAMCS sends `mapping`/`info` once, immediately after subscribing; every value in
+    /// subsequent messages carries only `numericId`, with `id`, `rawValue`, `engValue`,
+    /// `acquisitionStatus`, `monitoringResult`, `alarmRange` and `expireMillis` all omitted
+    /// (proto3 JSON omits fields at default value).
+    #[test]
+    fn parameter_value_deserializes_with_only_numeric_id() {
+        let json = r#"{"numericId": 42}"#;
+        let value: ParameterValue = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(value.numeric_id, 42);
+        assert!(value.id.is_none());
+        assert!(value.raw_value.is_none());
+        assert!(value.eng_value.is_none());
+        assert_eq!(value.acquisition_time, "");
+        assert!(value.alarm_range.is_empty());
+        assert_eq!(value.expire_millis, 0);
+    }
+
+    /// The first `SubscribeParametersData` after subscribing carries `mapping` (numericId ->
+    /// name) and `info`; a subsequent message's values then resolve via that map.
+    #[test]
+    fn subscribe_parameters_data_carries_mapping_and_resolves_by_numeric_id() {
+        let json = r#"{
+            "mapping": {"42": {"name": "/BigData/bigDataComponent/Counter"}},
+            "values": [{"numericId": 42, "engValue": {"type": "SINT32", "sint32Value": 7}}]
+        }"#;
+        let data: SubscribeParametersData = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(data.mapping.len(), 1);
+        let name = &data.mapping.get(&42).expect("mapping for id 42").name;
+        assert_eq!(name, "/BigData/bigDataComponent/Counter");
+        assert_eq!(data.values.len(), 1);
+        assert_eq!(data.values[0].numeric_id, 42);
+        assert!(data.values[0].id.is_none());
+    }
+}
