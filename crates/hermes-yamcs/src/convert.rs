@@ -157,14 +157,14 @@ pub fn yamcs_param_to_hermes(
     param: &yamcs_http::types::monitoring::ParameterValue,
     filter: &BusFilter,
 ) -> Result<Option<SourcedTelemetry>, Status> {
-    // YAMCS only sends a channel's name the first time it reports that channel; after that it
-    // sends just a numeric id to save bandwidth, and service.rs looks the name back up before
-    // calling us. If we still get no name, the mapping for this id hasn't arrived yet (e.g. a
-    // subscription that just started) - skip for now, it resolves itself on the next update.
+    // YAMCS may send only a numeric ID after the initial subscription mapping.
     let param_name = match &param.id {
         Some(id) => id.name.clone(),
         None => {
-            debug!(numeric_id = param.numeric_id, "Skipping parameter value with unresolved numeric_id");
+            debug!(
+                numeric_id = param.numeric_id,
+                "Skipping parameter value with unresolved numeric_id"
+            );
             return Ok(None);
         }
     };
@@ -182,7 +182,10 @@ pub fn yamcs_param_to_hermes(
 
     let Some(eng_val) = &param.eng_value else {
         // No value available; skip this parameter
-        debug!(numeric_id = param.numeric_id, "Skipping parameter with no value");
+        debug!(
+            numeric_id = param.numeric_id,
+            "Skipping parameter with no value"
+        );
         return Ok(None);
     };
     let value = yamcs_value_to_hermes(eng_val)?;
