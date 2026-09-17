@@ -321,3 +321,38 @@ pub fn yamcs_instance_to_fsw(instance: &yamcs_http::types::system::Instance) -> 
         dictionary: instance.name.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yamcs_param_to_hermes_converts_a_resolved_value() {
+        let param: yamcs_http::types::monitoring::ParameterValue = serde_json::from_str(
+            r#"{
+                "numericId": 42,
+                "id": {"name": "/BigData/bigDataComponent/Counter"},
+                "generationTime": "2026-01-01T00:00:00Z",
+                "engValue": {"type": "SINT32", "sint32Value": 7}
+            }"#,
+        )
+        .unwrap();
+
+        let telemetry = yamcs_param_to_hermes(&param, &BusFilter::default())
+            .unwrap()
+            .expect("a resolved parameter should convert");
+
+        let telem_ref = telemetry.telemetry.unwrap().r#ref.unwrap();
+        assert_eq!(telem_ref.name, "/BigData/bigDataComponent/Counter");
+    }
+
+    #[test]
+    fn yamcs_param_to_hermes_ignores_an_unresolved_numeric_id() {
+        let param: yamcs_http::types::monitoring::ParameterValue =
+            serde_json::from_str(r#"{"numericId": 7}"#).unwrap();
+
+        let result = yamcs_param_to_hermes(&param, &BusFilter::default()).unwrap();
+
+        assert!(result.is_none());
+    }
+}
