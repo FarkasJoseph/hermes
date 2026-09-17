@@ -761,12 +761,7 @@ impl Api for YamcsApiService {
 
                                             // Convert each parameter value to Hermes telemetry
                                             for mut param_value in data.values {
-                                                // Resolve numeric_id to name if id is missing
-                                                if param_value.id.is_none() {
-                                                    if let Some(resolved_id) = numeric_id_map.get(&param_value.numeric_id) {
-                                                        param_value.id = Some(resolved_id.clone());
-                                                    }
-                                                }
+                                                resolve_param_id(&mut param_value, &numeric_id_map);
 
                                                 match convert::yamcs_param_to_hermes(&param_value, &filter) {
                                                     Ok(Some(mut hermes_telem)) => {
@@ -872,5 +867,57 @@ impl Api for YamcsApiService {
 
         debug!("File transfer subscription established (stub)");
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// YAMCS only sends a parameter's name once, right after subscribing; later messages carry
+/// just `numeric_id`. Fill in `id` from the mapping built up from those earlier messages, if
+/// it's known yet.
+fn resolve_param_id(
+    param_value: &mut yamcs_http::types::monitoring::ParameterValue,
+    numeric_id_map: &std::collections::HashMap<u32, yamcs_http::types::common::NamedObjectId>,
+) {
+    if param_value.id.is_none() {
+        if let Some(resolved_id) = numeric_id_map.get(&param_value.numeric_id) {
+            param_value.id = Some(resolved_id.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yamcs_http::types::common::NamedObjectId;
+    use yamcs_http::types::monitoring::ParameterValue;
+
+    fn param_value(numeric_id: u32) -> ParameterValue {
+        serde_json::from_str(&format!(r#"{{"numericId": {numeric_id}}}"#)).unwrap()
+    }
+
+    #[test]
+    fn resolve_param_id_fills_in_a_known_numeric_id() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            42,
+            NamedObjectId {
+                name: "/BigData/bigDataComponent/Counter".to_string(),
+                namespace: None,
+            },
+        );
+        let mut param = param_value(42);
+
+        resolve_param_id(&mut param, &map);
+
+        assert_eq!(param.id.unwrap().name, "/BigData/bigDataComponent/Counter");
+    }
+
+    #[test]
+    fn resolve_param_id_leaves_an_unknown_numeric_id_unresolved() {
+        let map = std::collections::HashMap::new();
+        let mut param = param_value(42);
+
+        resolve_param_id(&mut param, &map);
+
+        assert!(param.id.is_none());
     }
 }
