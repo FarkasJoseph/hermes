@@ -82,6 +82,20 @@ fn hermes_value_to_json(value: &Value) -> Result<serde_json::Value, Status> {
     }
 }
 
+/// FNV-1a hash of a ref's qualified name, used as a stable `TelemetryRef`/`EventRef` id.
+/// Unlike std's `DefaultHasher`, this doesn't randomize its seed per process, so the same
+/// name always gets the same id.
+fn stable_id(key: &str) -> i32 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in key.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    (hash & 0x7fff_ffff) as i32 // mask to 31 bits so it's always non-negative
+}
+
 /// Convert YAMCS Event to Hermes SourcedEvent
 pub fn yamcs_event_to_hermes(
     yamcs_event: &yamcs_http::types::events::Event,
@@ -113,8 +127,13 @@ pub fn yamcs_event_to_hermes(
     };
 
     // Build event reference
+    // The id identifies this event's definition (its source and type), not this
+    // one occurrence, matching how sqlrecord keys the eventDefs table.
     let event_ref = EventRef {
-        id: yamcs_event.seq_number as i32,
+        id: stable_id(&format!(
+            "{}/{}",
+            yamcs_event.source, yamcs_event.event_type
+        )),
         name: yamcs_event.event_type.clone(),
         component: yamcs_event.source.clone(),
         severity: severity as i32,
@@ -191,7 +210,7 @@ pub fn yamcs_param_to_hermes(
     let value = yamcs_value_to_hermes(eng_val)?;
 
     let telem_ref = TelemetryRef {
-        id: 0,
+        id: stable_id(&param_name),
         name: param_name,
         component: "".to_string(),
         dictionary: "".to_string(),
@@ -354,5 +373,17 @@ mod tests {
         let result = yamcs_param_to_hermes(&param, &BusFilter::default()).unwrap();
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn stable_id_is_a_fixed_31_bit_hash_of_the_key() {
+        assert_eq!(
+            stable_id("/BigData_YamcsDeployment/BigData/bigDataComponent/FloatSamplesTlm"),
+            1590242697
+        );
+        assert_ne!(
+            stable_id("/BigData/bigDataComponent/Counter"),
+            stable_id("/BigData/bigDataComponent/MapStream")
+        );
     }
 }
