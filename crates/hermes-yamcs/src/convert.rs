@@ -380,7 +380,13 @@ mod tests {
             .expect("a resolved parameter should convert");
 
         let telem_ref = telemetry.telemetry.unwrap().r#ref.unwrap();
-        assert_eq!(telem_ref.name, "/BigData/bigDataComponent/Counter");
+        assert_eq!(telem_ref.component, "BigData/bigDataComponent");
+        assert_eq!(telem_ref.name, "Counter");
+        assert_eq!(
+            telem_ref.id,
+            stable_id("/BigData/bigDataComponent/Counter"),
+            "id must stay keyed on the full qualified name, not the split parts"
+        );
     }
 
     #[test]
