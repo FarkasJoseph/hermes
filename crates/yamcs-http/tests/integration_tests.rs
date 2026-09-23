@@ -485,10 +485,7 @@ async fn test_get_algorithm() {
 // Real-time Operations API Tests
 // ============================================================================
 
-// IGNORED: This test returns 404 because the YAMCS test server doesn't have processors configured.
-// To enable this test, configure processors in your YAMCS instance.
 #[tokio::test]
-#[ignore = "Requires YAMCS server with processors configured"]
 async fn test_get_processors() {
     let client = YamcsClient::new(YAMCS_URL).expect("Failed to create client");
     let instance = get_test_instance().await;
@@ -504,10 +501,7 @@ async fn test_get_processors() {
     }
 }
 
-// IGNORED: This test returns 404 because the YAMCS test server doesn't have processors configured.
-// To enable this test, configure processors in your YAMCS instance.
 #[tokio::test]
-#[ignore = "Requires YAMCS server with processors configured"]
 async fn test_get_processor() {
     let client = YamcsClient::new(YAMCS_URL).expect("Failed to create client");
     let instance = get_test_instance().await;
@@ -829,10 +823,10 @@ async fn test_get_alarms() {
     }
 }
 
-// IGNORED: This test returns 404 because the YAMCS test server doesn't have alarm processing enabled.
-// To enable this test, configure alarm processing in your YAMCS instance.
+// The route is correct, but the response does not deserialize yet: yamcs omits
+// AlarmRange::min_exclusive and sends expire_millis as a JSON string.
 #[tokio::test]
-#[ignore = "Requires YAMCS server with alarm processing enabled"]
+#[ignore = "Blocked on alarm deserialization, not on the route"]
 async fn test_get_active_alarms() {
     let client = YamcsClient::new(YAMCS_URL).expect("Failed to create client");
     let instance = get_test_instance().await;
@@ -853,24 +847,6 @@ async fn test_get_active_alarms() {
         .expect("Failed to get active alarms");
 
     println!("Found {} active alarms", alarms.len());
-}
-
-// IGNORED: This test returns 404 because the YAMCS test server doesn't have alarm processing enabled.
-// To enable this test, configure alarm processing in your YAMCS instance.
-#[tokio::test]
-#[ignore = "Requires YAMCS server with alarm processing enabled"]
-async fn test_get_global_alarm_status() {
-    let client = YamcsClient::new(YAMCS_URL).expect("Failed to create client");
-    let instance = get_test_instance().await;
-    let processor = get_test_processor();
-
-    let status = client
-        .get_global_alarm_status(&instance, processor)
-        .await
-        .expect("Failed to get global alarm status");
-
-    println!("Unacknowledged count: {}", status.unacknowledged_count);
-    println!("Acknowledged count: {}", status.acknowledged_count);
 }
 
 // ============================================================================

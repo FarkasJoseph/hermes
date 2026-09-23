@@ -376,7 +376,7 @@ impl YamcsClient {
     ) -> Result<crate::types::mdb::AlgorithmStatus> {
         self.http
             .get(&format!(
-                "/api/instances/{}/processors/{}/algorithms{}/status",
+                "/api/processors/{}/{}/algorithms{}/status",
                 instance, processor, qualified_name
             ))
             .await
@@ -391,7 +391,7 @@ impl YamcsClient {
     ) -> Result<crate::types::mdb::AlgorithmTrace> {
         self.http
             .get(&format!(
-                "/api/instances/{}/processors/{}/algorithms{}/trace",
+                "/api/processors/{}/{}/algorithms{}/trace",
                 instance, processor, qualified_name
             ))
             .await
@@ -409,12 +409,11 @@ impl YamcsClient {
         command: &str,
         options: &crate::types::monitoring::IssueCommandOptions,
     ) -> Result<crate::types::monitoring::IssueCommandResponse> {
-        let encoded_command = urlencoding::encode(command);
         self.http
             .post(
                 &format!(
-                    "/api/instances/{}/processors/{}/commands/{}",
-                    instance, processor, encoded_command
+                    "/api/processors/{}/{}/commands{}",
+                    instance, processor, command
                 ),
                 options,
             )
@@ -543,7 +542,7 @@ impl YamcsClient {
         }
         let response: ProcessorsWrapper = self
             .http
-            .get(&format!("/api/instances/{}/processors", instance))
+            .get(&format!("/api/processors?instance={}", instance))
             .await?;
         Ok(response.processors.unwrap_or_default())
     }
@@ -555,7 +554,7 @@ impl YamcsClient {
         name: &str,
     ) -> Result<crate::types::system::Processor> {
         self.http
-            .get(&format!("/api/instances/{}/processors/{}", instance, name))
+            .get(&format!("/api/processors/{}/{}", instance, name))
             .await
     }
 
@@ -569,7 +568,7 @@ impl YamcsClient {
         let _: serde_json::Value = self
             .http
             .patch(
-                &format!("/api/instances/{}/processors/{}", instance, processor),
+                &format!("/api/processors/{}/{}", instance, processor),
                 options,
             )
             .await?;
@@ -642,7 +641,7 @@ impl YamcsClient {
         let response: AlarmsResponse = self
             .http
             .get(&format!(
-                "/api/instances/{}/processors/{}/alarms?{}",
+                "/api/processors/{}/{}/alarms?{}",
                 instance, processor, query
             ))
             .await?;
@@ -680,7 +679,7 @@ impl YamcsClient {
             .http
             .post(
                 &format!(
-                    "/api/instances/{}/processors/{}/alarms{}/{}:acknowledge",
+                    "/api/processors/{}/{}/alarms{}/{}:acknowledge",
                     instance, processor, alarm_name, seq_num
                 ),
                 options,
@@ -702,7 +701,7 @@ impl YamcsClient {
             .http
             .post(
                 &format!(
-                    "/api/instances/{}/processors/{}/alarms{}/{}:shelve",
+                    "/api/processors/{}/{}/alarms{}/{}:shelve",
                     instance, processor, alarm_name, seq_num
                 ),
                 options,
@@ -723,7 +722,7 @@ impl YamcsClient {
             .http
             .post(
                 &format!(
-                    "/api/instances/{}/processors/{}/alarms{}/{}:unshelve",
+                    "/api/processors/{}/{}/alarms{}/{}:unshelve",
                     instance, processor, alarm_name, seq_num
                 ),
                 &serde_json::json!({}),
@@ -745,27 +744,13 @@ impl YamcsClient {
             .http
             .post(
                 &format!(
-                    "/api/instances/{}/processors/{}/alarms{}/{}:clear",
+                    "/api/processors/{}/{}/alarms{}/{}:clear",
                     instance, processor, alarm_name, seq_num
                 ),
                 options,
             )
             .await?;
         Ok(())
-    }
-
-    /// Get global alarm status
-    pub async fn get_global_alarm_status(
-        &self,
-        instance: &str,
-        processor: &str,
-    ) -> Result<crate::types::alarms::GlobalAlarmStatus> {
-        self.http
-            .get(&format!(
-                "/api/instances/{}/processors/{}/alarms/global-status",
-                instance, processor
-            ))
-            .await
     }
 
     // ========================================================================
