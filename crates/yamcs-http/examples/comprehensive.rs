@@ -206,31 +206,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => tracing::error!("   Error: {}", e),
     }
 
-    // 10. Global Alarm Status
-    tracing::info!("\n10. Global Alarm Status:");
-    match client.get_global_alarm_status(&instance, &processor).await {
-        Ok(status) => {
-            tracing::info!(
-                "   Unacknowledged: {} (active: {})",
-                status.unacknowledged_count,
-                status.unacknowledged_active
-            );
-            tracing::info!(
-                "   Acknowledged: {} (active: {})",
-                status.acknowledged_count,
-                status.acknowledged_active
-            );
-            tracing::info!(
-                "   Shelved: {} (active: {})",
-                status.shelved_count,
-                status.shelved_active
-            );
-        }
-        Err(e) => tracing::error!("   Error: {}", e),
-    }
-
-    // 11. Command History
-    tracing::info!("\n11. Recent Commands (last 3):");
+    // 10. Command History
+    tracing::info!("\n10. Recent Commands (last 3):");
     use yamcs_http::types::monitoring::GetCommandHistoryOptions;
     match client
         .get_command_history(

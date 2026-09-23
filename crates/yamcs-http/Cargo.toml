@@ -13,7 +13,6 @@ serde_urlencoded = "0.7"
 serde_with = "3.11"
 thiserror = "2.0"
 url = "2.5"
-urlencoding = "2.1"
 async-trait = "0.1"
 tracing = "0.1"
 tokio-tungstenite = { version = "0.24", optional = true }
