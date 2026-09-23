@@ -77,6 +77,10 @@ pub struct ParameterValue {
     pub monitoring_result: crate::types::common::MonitoringResult,
     pub alarm_range: Vec<AlarmRange>,
     pub range_condition: Option<RangeCondition>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::common::deserialize_string_or_number"
+    )]
     pub expire_millis: i64,
 }
 
@@ -478,4 +482,56 @@ pub struct StreamCommandIndexOptions {
     pub start: Option<String>,
     pub stop: Option<String>,
     pub merge_time: Option<i64>,
+}
+
+#[cfg(test)]
+mod json_shape_tests {
+    use super::*;
+
+    /// Every field ParameterValue requires on this branch. #265 makes most of these
+    /// optional; until it lands a fixture has to supply them.
+    fn param_value_json(alarm_range: &str, expire_millis: &str) -> String {
+        format!(
+            r#"{{
+                "numericId": 1,
+                "id": {{"name": "/YSS/ccsds-apid"}},
+                "rawValue": {{"type": "UINT32", "uint32Value": 1}},
+                "engValue": {{"type": "UINT32", "uint32Value": 1}},
+                "acquisitionTime": "2026-01-01T00:00:00Z",
+                "generationTime": "2026-01-01T00:00:00Z",
+                "acquisitionStatus": "ACQUIRED",
+                "monitoringResult": "IN_LIMITS",
+                "alarmRange": {alarm_range},
+                "expireMillis": {expire_millis}
+            }}"#
+        )
+    }
+
+    /// Observed against a live yamcs 5.13.5 simulator: expireMillis arrives as a JSON
+    /// string, the same proto3 convention as the other 64-bit fields. Parsing it as a
+    /// bare number aborted the whole SubscribeParametersData message.
+    #[test]
+    fn expire_millis_deserializes_from_a_json_string() {
+        let pv: ParameterValue = serde_json::from_str(&param_value_json("[]", r#""950""#)).unwrap();
+        assert_eq!(pv.expire_millis, 950);
+    }
+
+    #[test]
+    fn expire_millis_deserializes_from_a_json_number() {
+        let pv: ParameterValue = serde_json::from_str(&param_value_json("[]", "950")).unwrap();
+        assert_eq!(pv.expire_millis, 950);
+    }
+
+    /// Yamcs sends only the bounds that are set. A one-sided range used to fail on the
+    /// missing field rather than being read as open at that end.
+    #[test]
+    fn alarm_range_tolerates_omitted_bounds() {
+        let json = param_value_json(r#"[{"level": "WARNING", "minInclusive": -10.0}]"#, "0");
+        let pv: ParameterValue = serde_json::from_str(&json).unwrap();
+        let range = &pv.alarm_range[0];
+        assert_eq!(range.min_inclusive, Some(-10.0));
+        assert_eq!(range.max_inclusive, None);
+        assert_eq!(range.min_exclusive, None);
+        assert_eq!(range.max_exclusive, None);
+    }
 }

@@ -538,10 +538,13 @@ pub enum AlarmLevelType {
 #[serde(rename_all = "camelCase")]
 pub struct AlarmRange {
     pub level: AlarmLevelType,
-    pub min_inclusive: f64,
-    pub max_inclusive: f64,
-    pub min_exclusive: f64,
-    pub max_exclusive: f64,
+    /// Yamcs omits whichever bounds are unset, and an absent bound means the band is
+    /// open at that end. These describe the *nominal* in-limits band: the alarm fires
+    /// when the value falls outside the range.
+    pub min_inclusive: Option<f64>,
+    pub max_inclusive: Option<f64>,
+    pub min_exclusive: Option<f64>,
+    pub max_exclusive: Option<f64>,
 }
 
 /// Algorithm definition
