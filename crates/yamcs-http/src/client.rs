@@ -252,6 +252,42 @@ impl YamcsClient {
             .await
     }
 
+    /// Get every parameter, following pagination.
+    ///
+    /// Yamcs returns one page at a time (100 parameters by default), so a single
+    /// `get_parameters` call sees only the first page.
+    ///
+    /// `options.limit` sets the page size, not a cap on results. `options.pos` and
+    /// `options.next` are both ignored, since either one would start the walk part
+    /// way through and quietly return less than everything.
+    ///
+    /// Only parameters are returned. Setting `options.system` also makes yamcs report
+    /// the subsystems under that path in a separate list, which this drops, so a
+    /// system-scoped call can come back empty even though the system exists. Use
+    /// `get_parameters` to walk the tree.
+    pub async fn get_all_parameters(
+        &self,
+        instance: &str,
+        options: &crate::types::mdb::GetParametersOptions,
+    ) -> Result<Vec<crate::types::mdb::Parameter>> {
+        let mut options = options.clone();
+        options.pos = None;
+        options.next = None;
+
+        let mut all = Vec::new();
+        loop {
+            let page = self.get_parameters(instance, &options).await?;
+            all.extend(page.parameters.unwrap_or_default());
+
+            // Yamcs omits the token on the last page. Some protobuf-JSON settings send
+            // an empty string rather than omitting it, which means the same thing.
+            match page.continuation_token.filter(|token| !token.is_empty()) {
+                Some(token) => options.next = Some(token),
+                None => return Ok(all),
+            }
+        }
+    }
+
     /// Get a specific parameter by qualified name
     pub async fn get_parameter(
         &self,

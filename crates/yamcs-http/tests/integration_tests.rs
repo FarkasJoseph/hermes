@@ -873,6 +873,55 @@ async fn test_get_global_alarm_status() {
     println!("Acknowledged count: {}", status.acknowledged_count);
 }
 
+#[tokio::test]
+async fn test_get_all_parameters_follows_pagination() {
+    let client = YamcsClient::new(YAMCS_URL).expect("Failed to create client");
+    let instance = get_test_instance().await;
+
+    let options = mdb::GetParametersOptions::default();
+
+    let first_page = client
+        .get_parameters(&instance, &options)
+        .await
+        .expect("Failed to get parameters");
+    let page_len = first_page.parameters.clone().unwrap_or_default().len();
+
+    let all = client
+        .get_all_parameters(&instance, &options)
+        .await
+        .expect("Failed to get all parameters");
+
+    // Not compared against first_page.total_size: yamcs creates link parameters while
+    // the instance settles, so that count can move between the two calls.
+    let unique: std::collections::HashSet<_> = all.iter().map(|p| &p.qualified_name).collect();
+    assert_eq!(unique.len(), all.len(), "a page was fetched twice");
+
+    assert!(
+        all.len() > page_len,
+        "this instance has {all_len} parameters in a page of {page_len}, too few to page over",
+        all_len = all.len(),
+        page_len = page_len
+    );
+
+    // A token left on the caller's options would otherwise start the walk part way in.
+    let resumed = client
+        .get_all_parameters(
+            &instance,
+            &mdb::GetParametersOptions {
+                next: first_page.continuation_token,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Failed to get all parameters");
+
+    assert_eq!(
+        all.len(),
+        resumed.len(),
+        "a caller-supplied token is ignored"
+    );
+}
+
 // ============================================================================
 // Error Handling Tests
 // ============================================================================
