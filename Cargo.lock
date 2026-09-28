@@ -4002,6 +4002,9 @@ version = "4.1.0-a1"
 dependencies = [
  "async-trait",
  "futures-util",
+ "prost",
+ "prost-build",
+ "prost-types",
  "reqwest",
  "serde",
  "serde_json",
