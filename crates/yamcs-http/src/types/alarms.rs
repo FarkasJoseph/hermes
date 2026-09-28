@@ -91,7 +91,7 @@ pub struct Alarm {
     pub alarm_type: AlarmType,
     pub notification_type: AlarmNotificationType,
     pub id: NamedObjectId,
-    pub update_time: String,
+    pub update_time: Option<String>,
     pub trigger_time: String,
     pub violations: u32,
     pub count: u32,
@@ -101,7 +101,9 @@ pub struct Alarm {
     pub severity: AlarmSeverity,
     #[serde(rename = "readonly")]
     pub read_only: bool,
+    #[serde(default)]
     pub latching: bool,
+    #[serde(rename = "processOK")]
     pub process_ok: bool,
     pub triggered: bool,
     pub acknowledged: bool,
@@ -196,4 +198,54 @@ pub struct ShelveAlarmOptions {
 #[serde(rename_all = "camelCase")]
 pub struct ClearAlarmOptions {
     pub comment: Option<String>,
+}
+
+#[cfg(test)]
+mod json_shape_tests {
+    use super::*;
+
+    /// An active EVENT alarm as returned by a live yamcs 5.13.5 server. Yamcs spells the
+    /// field processOK and omits updateTime and latching when they are unset.
+    #[test]
+    fn active_event_alarm_deserializes() {
+        let event = r#"{
+            "source": "bigdata_tm",
+            "generationTime": "2026-09-25T21:39:06.951Z",
+            "receptionTime": "2026-09-25T21:39:06.951Z",
+            "seqNumber": 0,
+            "type": "AbstractTmFrameLink",
+            "message": "Error processing frame",
+            "severity": "WARNING"
+        }"#;
+        let json = format!(
+            r#"{{
+                "type": "EVENT",
+                "triggerTime": "2026-09-25T21:39:06.951Z",
+                "id": {{"name": "AbstractTmFrameLink", "namespace": "/yamcs/event/bigdata_tm"}},
+                "seqNum": 0,
+                "severity": "WARNING",
+                "violations": 1,
+                "count": 1,
+                "notificationType": "ACTIVE",
+                "eventDetail": {{
+                    "triggerEvent": {event},
+                    "mostSevereEvent": {event},
+                    "currentEvent": {event}
+                }},
+                "processOK": false,
+                "triggered": true,
+                "acknowledged": false,
+                "readonly": false,
+                "pending": false
+            }}"#
+        );
+        let alarm: Alarm = serde_json::from_str(&json).unwrap();
+        assert_eq!(alarm.alarm_type, AlarmType::Event);
+        assert_eq!(alarm.update_time, None);
+        assert!(!alarm.latching);
+        assert_eq!(
+            alarm.event_detail.unwrap().current_event.message,
+            "Error processing frame"
+        );
+    }
 }
