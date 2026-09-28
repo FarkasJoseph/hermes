@@ -6,15 +6,13 @@
 //! Run with: cargo run --example websocket_subscriptions --features websocket
 
 #[cfg(feature = "websocket")]
-use yamcs_http::{
-    AuthMethod, YamcsClient,
-    types::{
-        alarms::{SubscribeAlarmsRequest, SubscribeGlobalAlarmStatusRequest},
-        common::NamedObjectId,
-        events::SubscribeEventsRequest,
-        monitoring::{SubscribeParametersAction, SubscribeParametersRequest},
-    },
+use yamcs_http::pb::yamcs::protobuf::NamedObjectId;
+use yamcs_http::pb::yamcs::protobuf::alarms::{
+    SubscribeAlarmsRequest, SubscribeGlobalStatusRequest,
 };
+use yamcs_http::pb::yamcs::protobuf::events::SubscribeEventsRequest;
+use yamcs_http::pb::yamcs::protobuf::processing::SubscribeParametersRequest;
+use yamcs_http::{AuthMethod, YamcsClient};
 
 #[cfg(feature = "websocket")]
 #[tokio::main]
@@ -52,8 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to events
     tracing::info!("Subscribing to events...");
     let events_request = SubscribeEventsRequest {
-        instance: instance.clone(),
-        filter: None,
+        instance: Some(instance.clone()),
+        ..Default::default()
     };
     let mut events_rx = client.subscribe_events(&events_request).await?;
     tracing::info!("Events subscription active\n");
@@ -62,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         while let Some(event) = events_rx.recv().await {
             tracing::info!(
-                "[EVENT {:?}] {}: {}",
+                "[EVENT {:?}] {:?}: {:?}",
                 event.severity,
                 event.source,
                 event.message
@@ -72,9 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Subscribe to global alarm status
     tracing::info!("Subscribing to global alarm status...");
-    let alarm_status_request = SubscribeGlobalAlarmStatusRequest {
-        instance: instance.clone(),
-        processor: processor.clone(),
+    let alarm_status_request = SubscribeGlobalStatusRequest {
+        instance: Some(instance.clone()),
+        processor: Some(processor.clone()),
     };
     let mut alarm_status_rx = client
         .subscribe_global_alarm_status(&alarm_status_request)
@@ -85,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         while let Some(status) = alarm_status_rx.recv().await {
             tracing::info!(
-                "[ALARM STATUS] Unack: {} (active: {}), Ack: {} (active: {}), Shelved: {}",
+                "[ALARM STATUS] Unack: {:?} (active: {:?}), Ack: {:?} (active: {:?}), Shelved: {:?}",
                 status.unacknowledged_count,
                 status.unacknowledged_active,
                 status.acknowledged_count,
@@ -98,9 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to alarms
     tracing::info!("Subscribing to alarms...");
     let alarms_request = SubscribeAlarmsRequest {
-        instance: instance.clone(),
-        processor: processor.clone(),
-        include_pending: true,
+        instance: Some(instance.clone()),
+        processor: Some(processor.clone()),
+        ..Default::default()
     };
     let mut alarms_rx = client.subscribe_alarms(&alarms_request).await?;
     tracing::info!("Alarms subscription active\n");
@@ -109,9 +107,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         while let Some(alarm) = alarms_rx.recv().await {
             tracing::info!(
-                "[ALARM {:?}] {} - seq: {}, violations: {}",
+                "[ALARM {:?}] {:?} - seq: {:?}, violations: {:?}",
                 alarm.severity,
-                alarm.id.name,
+                alarm.id.as_ref().map(|id| id.name.as_str()),
                 alarm.seq_num,
                 alarm.violations
             );
@@ -125,8 +123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !param_list.is_empty() {
             tracing::info!("Subscribing to parameters: {:?}...", param_list);
             let params_request = SubscribeParametersRequest {
-                instance: instance.clone(),
-                processor: processor.clone(),
+                instance: Some(instance.clone()),
+                processor: Some(processor.clone()),
                 id: param_list
                     .iter()
                     .map(|name| NamedObjectId {
@@ -134,11 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         namespace: None,
                     })
                     .collect(),
-                abort_on_invalid: false,
-                update_on_expiration: false,
-                send_from_cache: true,
-                max_bytes: None,
-                action: SubscribeParametersAction::Replace,
+                ..Default::default()
             };
             let mut params_rx = client.subscribe_parameters(&params_request).await?;
             tracing::info!("Parameter subscription active\n");
@@ -160,8 +154,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Show parameter values
                     for param in &data.values {
                         tracing::info!(
-                            "[PARAM] {} = {:?} @ {}",
-                            param.id.name,
+                            "[PARAM] {:?} = {:?} @ {:?}",
+                            param.id.as_ref().map(|id| id.name.as_str()),
                             param.eng_value,
                             param.generation_time
                         );

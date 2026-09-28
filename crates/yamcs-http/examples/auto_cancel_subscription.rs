@@ -6,7 +6,8 @@
 //! Run with: cargo run --example auto_cancel_subscription --features websocket
 
 #[cfg(feature = "websocket")]
-use yamcs_http::{AuthMethod, YamcsClient, types::events::SubscribeEventsRequest};
+use yamcs_http::pb::yamcs::protobuf::events::SubscribeEventsRequest;
+use yamcs_http::{AuthMethod, YamcsClient};
 
 #[cfg(feature = "websocket")]
 #[tokio::main]
@@ -37,8 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Example 1: Explicit cancellation via drop()");
     {
         let events_request = SubscribeEventsRequest {
-            instance: instance.clone(),
-            filter: None,
+            instance: Some(instance.clone()),
+            ..Default::default()
         };
 
         let mut rx = client.subscribe_events(&events_request).await?;
@@ -47,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let handle = tokio::spawn(async move {
             let mut count = 0;
             while let Some(event) = rx.recv().await {
-                tracing::info!("[EVENT] {}: {}", event.source, event.message);
+                tracing::info!("[EVENT] {:?}: {:?}", event.source, event.message);
                 count += 1;
             }
             tracing::info!("Receiver closed - received {} events", count);
@@ -70,8 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Example 2: Automatic cancellation when receiver goes out of scope");
     {
         let events_request = SubscribeEventsRequest {
-            instance: instance.clone(),
-            filter: None,
+            instance: Some(instance.clone()),
+            ..Default::default()
         };
 
         {
@@ -81,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _handle = tokio::spawn(async move {
                 let mut count = 0;
                 while let Some(event) = rx.recv().await {
-                    tracing::info!("[EVENT] {}: {}", event.source, event.message);
+                    tracing::info!("[EVENT] {:?}: {:?}", event.source, event.message);
                     count += 1;
                 }
                 tracing::info!("Receiver closed - received {} events", count);
@@ -105,8 +106,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("\nExample 3: Multiple independent subscriptions");
     {
         let events_request = SubscribeEventsRequest {
-            instance: instance.clone(),
-            filter: None,
+            instance: Some(instance.clone()),
+            ..Default::default()
         };
 
         // Create two independent subscriptions
@@ -119,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let handle1 = tokio::spawn(async move {
             let mut count = 0;
             while let Some(event) = rx1.recv().await {
-                tracing::info!("[SUB1] {}: {}", event.source, event.message);
+                tracing::info!("[SUB1] {:?}: {:?}", event.source, event.message);
                 count += 1;
             }
             tracing::info!("Subscription 1 closed - received {} events", count);
@@ -128,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let handle2 = tokio::spawn(async move {
             let mut count = 0;
             while let Some(event) = rx2.recv().await {
-                tracing::info!("[SUB2] {}: {}", event.source, event.message);
+                tracing::info!("[SUB2] {:?}: {:?}", event.source, event.message);
                 count += 1;
             }
             tracing::info!("Subscription 2 closed - received {} events", count);
