@@ -153,7 +153,8 @@ impl WebSocketClient {
 
                                 // Check if this is a reply message
                                 if msg.r#type == "reply" {
-                                    let reply = msg.data.as_ref().and_then(|d| d.to_msg::<Reply>().ok());
+                                    let reply =
+                                        msg.data.as_ref().and_then(|d| d.to_msg::<Reply>().ok());
                                     if let Some(reply) = reply {
                                         let mut pending = pending_requests.lock().await;
                                         if let Some(request) =
@@ -267,15 +268,16 @@ impl WebSocketClient {
 
         // Create subscription with deserialization/send closure
         let sender_tx = tx.clone();
-        let subscription =
-            Subscription::new(subscription_type.clone(), move |data| match data.to_msg::<D>() {
+        let subscription = Subscription::new(subscription_type.clone(), move |data| {
+            match data.to_msg::<D>() {
                 Ok(data) => {
                     let _ = sender_tx.send(data);
                 }
                 Err(e) => {
                     tracing::error!("Failed to decode {}: {}", D::full_name(), e);
                 }
-            });
+            }
+        });
 
         let (call_id, _) = self.request(subscription_type, options).await?;
 

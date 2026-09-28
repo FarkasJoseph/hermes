@@ -871,13 +871,13 @@ impl YamcsClient {
         &self,
         request: &crate::pb::yamcs::protobuf::processing::SubscribeParametersRequest,
     ) -> Result<
-        tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::processing::SubscribeParametersData>,
+        tokio::sync::mpsc::UnboundedReceiver<
+            crate::pb::yamcs::protobuf::processing::SubscribeParametersData,
+        >,
     > {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
-            client
-                .subscribe("parameters", request.clone())
-                .await
+            client.subscribe("parameters", request.clone()).await
         } else {
             Err(crate::error::YamcsError::WebSocket(
                 "WebSocket client not initialized".to_string(),
@@ -910,12 +910,11 @@ impl YamcsClient {
     pub async fn subscribe_events(
         &self,
         request: &crate::pb::yamcs::protobuf::events::SubscribeEventsRequest,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::events::Event>> {
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::events::Event>>
+    {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
-            client
-                .subscribe("events", request.clone())
-                .await
+            client.subscribe("events", request.clone()).await
         } else {
             Err(crate::error::YamcsError::WebSocket(
                 "WebSocket client not initialized".to_string(),
@@ -949,12 +948,11 @@ impl YamcsClient {
     pub async fn subscribe_alarms(
         &self,
         request: &crate::pb::yamcs::protobuf::alarms::SubscribeAlarmsRequest,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::alarms::AlarmData>> {
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::alarms::AlarmData>>
+    {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
-            client
-                .subscribe("alarms", request.clone())
-                .await
+            client.subscribe("alarms", request.clone()).await
         } else {
             Err(crate::error::YamcsError::WebSocket(
                 "WebSocket client not initialized".to_string(),
@@ -987,7 +985,9 @@ impl YamcsClient {
     pub async fn subscribe_global_alarm_status(
         &self,
         request: &crate::pb::yamcs::protobuf::alarms::SubscribeGlobalStatusRequest,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::alarms::GlobalAlarmStatus>> {
+    ) -> Result<
+        tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::alarms::GlobalAlarmStatus>,
+    > {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
             client
