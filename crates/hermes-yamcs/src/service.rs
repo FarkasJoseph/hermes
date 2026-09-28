@@ -4,6 +4,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, warn};
 use yamcs_http::YamcsClient;
+use yamcs_http::pb::yamcs::protobuf::NamedObjectId;
+use yamcs_http::pb::yamcs::protobuf::events::SubscribeEventsRequest;
+use yamcs_http::pb::yamcs::protobuf::processing::{
+    SubscribeParametersRequest, subscribe_parameters_request::Action,
+};
 
 use crate::convert;
 
@@ -568,8 +573,8 @@ impl Api for YamcsApiService {
 
             for instance in instances {
                 match yamcs_client
-                    .subscribe_events(&yamcs_http::SubscribeEventsRequest {
-                        instance: instance.clone(),
+                    .subscribe_events(&SubscribeEventsRequest {
+                        instance: Some(instance.clone()),
                         filter: None,
                     })
                     .await
@@ -684,10 +689,7 @@ impl Api for YamcsApiService {
 
             for instance in instances {
                 // Build parameter ID list per instance
-                let param_ids: Vec<yamcs_http::types::common::NamedObjectId> = if filter_clone
-                    .names
-                    .is_empty()
-                {
+                let param_ids: Vec<NamedObjectId> = if filter_clone.names.is_empty() {
                     // No specific names requested - subscribe to ALL parameters in this instance
                     match yamcs_client
                         .get_parameters(
@@ -700,7 +702,7 @@ impl Api for YamcsApiService {
                             if let Some(parameters) = params_page.parameters {
                                 parameters
                                     .iter()
-                                    .map(|p| yamcs_http::types::common::NamedObjectId {
+                                    .map(|p| NamedObjectId {
                                         name: p.qualified_name.clone(),
                                         namespace: None,
                                     })
@@ -720,7 +722,7 @@ impl Api for YamcsApiService {
                     filter_clone
                         .names
                         .iter()
-                        .map(|name| yamcs_http::types::common::NamedObjectId {
+                        .map(|name| NamedObjectId {
                             name: name.clone(),
                             namespace: None,
                         })
@@ -730,15 +732,15 @@ impl Api for YamcsApiService {
                 let param_count = param_ids.len();
                 debug!(instance = %instance, param_count = param_count, "Subscribing to parameters");
 
-                let subscribe_request = yamcs_http::types::monitoring::SubscribeParametersRequest {
-                    instance: instance.clone(),
-                    processor: processor.clone(),
+                let subscribe_request = SubscribeParametersRequest {
+                    instance: Some(instance.clone()),
+                    processor: Some(processor.clone()),
                     id: param_ids,
-                    abort_on_invalid: false,
-                    update_on_expiration: false,
-                    send_from_cache: false,
+                    abort_on_invalid: Some(false),
+                    update_on_expiration: Some(false),
+                    send_from_cache: Some(false),
                     max_bytes: None,
-                    action: yamcs_http::types::monitoring::SubscribeParametersAction::Replace,
+                    action: Some(Action::Replace as i32),
                 };
 
                 match yamcs_client.subscribe_parameters(&subscribe_request).await {
@@ -768,7 +770,7 @@ impl Api for YamcsApiService {
                                                         // Filtered out
                                                     }
                                                     Err(e) => {
-                                                        error!(error = %e, instance = %instance_name, param = %param_value.id.name, "Failed to convert telemetry");
+                                                        error!(error = %e, instance = %instance_name, param = %convert::parameter_name(&param_value), "Failed to convert telemetry");
                                                     }
                                                 }
                                             }

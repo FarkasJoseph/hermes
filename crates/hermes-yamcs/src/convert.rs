@@ -1,11 +1,10 @@
-use chrono::{DateTime, Utc};
 use hermes_pb::*;
-use prost_types::Timestamp;
 use std::collections::HashMap;
 use tonic::Status;
 use yamcs_http::pb::yamcs::protobuf::Value as YamcsValue;
-use yamcs_http::pb::yamcs::protobuf::event::EventSeverity;
 use yamcs_http::pb::yamcs::protobuf::events::Event as YamcsEvent;
+use yamcs_http::pb::yamcs::protobuf::events::event::EventSeverity;
+use yamcs_http::pb::yamcs::protobuf::pvalue::ParameterValue as YamcsParameterValue;
 use yamcs_http::pb::yamcs::protobuf::value::Type as ValueType;
 
 /// Convert Hermes CommandValue to YAMCS IssueCommandOptions
@@ -106,13 +105,21 @@ pub fn yamcs_event_to_hermes(
     // Yamcs sends a real timestamp here, so there is nothing to parse.
     let time = Time {
         unix: yamcs_event.generation_time,
+        sclk: 0.0,
     };
 
     // Map YAMCS severity to Hermes severity
-    let severity = match yamcs_event.severity.and_then(|s| EventSeverity::try_from(s).ok()) {
+    let severity = match yamcs_event
+        .severity
+        .and_then(|s| EventSeverity::try_from(s).ok())
+    {
         Some(EventSeverity::Watch) => EvrSeverity::EvrActivityHigh,
-        Some(EventSeverity::Warning) | Some(EventSeverity::WarningNew) => EvrSeverity::EvrWarningLow,
-        Some(EventSeverity::Distress) | Some(EventSeverity::Critical) => EvrSeverity::EvrWarningHigh,
+        Some(EventSeverity::Warning) | Some(EventSeverity::WarningNew) => {
+            EvrSeverity::EvrWarningLow
+        }
+        Some(EventSeverity::Distress) | Some(EventSeverity::Critical) => {
+            EvrSeverity::EvrWarningHigh
+        }
         Some(EventSeverity::Severe) => EvrSeverity::EvrFatal,
         #[allow(deprecated)]
         Some(EventSeverity::Error) => EvrSeverity::EvrWarningLow,
@@ -157,13 +164,22 @@ pub fn yamcs_event_to_hermes(
     Ok(Some(sourced_event))
 }
 
+/// Qualified name of a YAMCS ParameterValue, empty when Yamcs sent only a numeric id
+pub fn parameter_name(param: &YamcsParameterValue) -> String {
+    param
+        .id
+        .as_ref()
+        .map(|id| id.name.clone())
+        .unwrap_or_default()
+}
+
 /// Convert YAMCS ParameterValue to Hermes SourcedTelemetry
 pub fn yamcs_param_to_hermes(
-    param: &yamcs_http::types::monitoring::ParameterValue,
+    param: &YamcsParameterValue,
     filter: &BusFilter,
 ) -> Result<Option<SourcedTelemetry>, Status> {
     // Build full parameter name
-    let param_name = param.id.name.clone();
+    let param_name = parameter_name(param);
 
     // Apply name filter
     if !filter.names.is_empty()
@@ -173,11 +189,17 @@ pub fn yamcs_param_to_hermes(
         return Ok(None);
     }
 
-    // Parse generation time
-    let time = parse_yamcs_time(&param.generation_time)?;
+    // Yamcs sends a real timestamp here, so there is nothing to parse.
+    let time = Time {
+        unix: param.generation_time,
+        sclk: 0.0,
+    };
 
     // Convert YAMCS value to Hermes value
-    let value = yamcs_value_to_hermes(&param.eng_value)?;
+    let value = match &param.eng_value {
+        Some(eng_value) => yamcs_value_to_hermes(eng_value)?,
+        None => Value { value: None },
+    };
 
     // Build telemetry reference
     // let telem_ref = TelemetryRef {
@@ -209,97 +231,62 @@ pub fn yamcs_param_to_hermes(
 }
 
 /// Convert YAMCS Value to Hermes Value
-fn yamcs_value_to_hermes(yamcs_value: &yamcs_http::Value) -> Result<Value, Status> {
-    match yamcs_value {
-        yamcs_http::Value::Float { float_value } => Ok(Value {
-            value: Some(value::Value::F(*float_value as f64)),
-        }),
-        yamcs_http::Value::Double { double_value } => Ok(Value {
-            value: Some(value::Value::F(*double_value)),
-        }),
-        yamcs_http::Value::Uint32 { uint32_value } => Ok(Value {
-            value: Some(value::Value::U(*uint32_value as u64)),
-        }),
-        yamcs_http::Value::Sint32 { sint32_value } => Ok(Value {
-            value: Some(value::Value::I(*sint32_value as i64)),
-        }),
-        yamcs_http::Value::Uint64 { uint64_value } => Ok(Value {
-            value: Some(value::Value::U(*uint64_value)),
-        }),
-        yamcs_http::Value::Sint64 { sint64_value } => Ok(Value {
-            value: Some(value::Value::I(*sint64_value)),
-        }),
-        yamcs_http::Value::Boolean { boolean_value } => Ok(Value {
-            value: Some(value::Value::B(*boolean_value)),
-        }),
-        yamcs_http::Value::String { string_value } => Ok(Value {
-            value: Some(value::Value::S(string_value.clone())),
-        }),
-        yamcs_http::Value::Binary { binary_value } => {
-            // Binary is base64 encoded, decode it
-            let decoded =
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, binary_value)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid base64: {}", e)))?;
-            Ok(Value {
-                value: Some(value::Value::R(BytesValue {
-                    kind: NumberKind::NumberU8 as i32,
-                    big_endian: false,
-                    value: decoded,
-                })),
+///
+/// The type tag selects which of the value fields Yamcs populated; a tag whose field is absent
+/// converts to an empty Hermes value.
+fn yamcs_value_to_hermes(yamcs_value: &YamcsValue) -> Result<Value, Status> {
+    let value_type = ValueType::try_from(yamcs_value.r#type).map_err(|_| {
+        Status::invalid_argument(format!("Unknown value type: {}", yamcs_value.r#type))
+    })?;
+
+    let value = match value_type {
+        ValueType::Float => yamcs_value.float_value.map(|v| value::Value::F(v as f64)),
+        ValueType::Double => yamcs_value.double_value.map(value::Value::F),
+        ValueType::Uint32 => yamcs_value.uint32_value.map(|v| value::Value::U(v as u64)),
+        ValueType::Sint32 => yamcs_value.sint32_value.map(|v| value::Value::I(v as i64)),
+        ValueType::Uint64 => yamcs_value.uint64_value.map(value::Value::U),
+        ValueType::Sint64 => yamcs_value.sint64_value.map(value::Value::I),
+        ValueType::Boolean => yamcs_value.boolean_value.map(value::Value::B),
+        ValueType::String => yamcs_value.string_value.clone().map(value::Value::S),
+        ValueType::Binary => yamcs_value.binary_value.clone().map(|bytes| {
+            value::Value::R(BytesValue {
+                kind: NumberKind::NumberU8 as i32,
+                big_endian: false,
+                value: bytes,
             })
-        }
-        yamcs_http::Value::Timestamp { timestamp_value } => {
-            // Convert timestamp to string
-            Ok(Value {
-                value: Some(value::Value::S(format!("{}", timestamp_value))),
-            })
-        }
-        yamcs_http::Value::Aggregate { aggregate_value } => {
+        }),
+        // Yamcs sends microseconds since the epoch; Hermes has no integer timestamp value.
+        ValueType::Timestamp => yamcs_value
+            .timestamp_value
+            .map(|v| value::Value::S(format!("{}", v))),
+        ValueType::Aggregate => {
             // Convert aggregate to object
             let mut obj = HashMap::new();
-            for (i, name) in aggregate_value.name.iter().enumerate() {
-                if let Some(val) = aggregate_value.value.get(i) {
-                    obj.insert(name.clone(), yamcs_value_to_hermes(val)?);
+            if let Some(aggregate_value) = &yamcs_value.aggregate_value {
+                for (i, name) in aggregate_value.name.iter().enumerate() {
+                    if let Some(val) = aggregate_value.value.get(i) {
+                        obj.insert(name.clone(), yamcs_value_to_hermes(val)?);
+                    }
                 }
             }
-            Ok(Value {
-                value: Some(value::Value::O(ObjectValue { o: obj })),
-            })
+            Some(value::Value::O(ObjectValue { o: obj }))
         }
-        yamcs_http::Value::Array { array_value } => {
-            let values: Result<Vec<_>, _> = array_value.iter().map(yamcs_value_to_hermes).collect();
-            Ok(Value {
-                value: Some(value::Value::A(ArrayValue { value: values? })),
-            })
+        ValueType::Array => {
+            let values: Result<Vec<_>, _> = yamcs_value
+                .array_value
+                .iter()
+                .map(yamcs_value_to_hermes)
+                .collect();
+            Some(value::Value::A(ArrayValue { value: values? }))
         }
-        yamcs_http::Value::Enumerated { string_value } => {
+        ValueType::Enumerated => {
             // Enumerated values are represented as strings
-            Ok(Value {
-                value: Some(value::Value::S(string_value.clone())),
-            })
+            yamcs_value.string_value.clone().map(value::Value::S)
         }
-        yamcs_http::Value::None => {
-            // No value
-            Ok(Value { value: None })
-        }
-    }
-}
+        ValueType::None => None,
+    };
 
-/// Parse YAMCS timestamp string to Hermes Time
-fn parse_yamcs_time(time_str: &str) -> Result<Time, Status> {
-    // Parse ISO8601 timestamp
-    let dt = DateTime::parse_from_rfc3339(time_str)
-        .map_err(|e| Status::invalid_argument(format!("Invalid timestamp: {}", e)))?;
-
-    let utc: DateTime<Utc> = dt.into();
-
-    Ok(Time {
-        unix: Some(Timestamp {
-            seconds: utc.timestamp(),
-            nanos: utc.timestamp_subsec_nanos() as i32,
-        }),
-        sclk: 0.0,
-    })
+    Ok(Value { value })
 }
 
 /// Convert YAMCS Instance to Hermes Fsw
