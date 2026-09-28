@@ -47,4 +47,5 @@
 pub mod client;
 pub mod subscription;
 
-pub use client::{ClientMessage, ConnectionState, ServerMessage, WebSocketClient};
+pub use crate::pb::yamcs::api::{ClientMessage, ServerMessage};
+pub use client::{ConnectionState, WebSocketClient};

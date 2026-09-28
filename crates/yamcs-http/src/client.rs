@@ -869,14 +869,14 @@ impl YamcsClient {
     /// ```
     pub async fn subscribe_parameters(
         &self,
-        request: &crate::types::monitoring::SubscribeParametersRequest,
+        request: &crate::pb::yamcs::protobuf::processing::SubscribeParametersRequest,
     ) -> Result<
-        tokio::sync::mpsc::UnboundedReceiver<crate::types::monitoring::SubscribeParametersData>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::processing::SubscribeParametersData>,
     > {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
             client
-                .subscribe("parameters", serde_json::to_value(request)?)
+                .subscribe("parameters", request.clone())
                 .await
         } else {
             Err(crate::error::YamcsError::WebSocket(
@@ -909,12 +909,12 @@ impl YamcsClient {
     /// ```
     pub async fn subscribe_events(
         &self,
-        request: &crate::types::events::SubscribeEventsRequest,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::types::events::Event>> {
+        request: &crate::pb::yamcs::protobuf::events::SubscribeEventsRequest,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::events::Event>> {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
             client
-                .subscribe("events", serde_json::to_value(request)?)
+                .subscribe("events", request.clone())
                 .await
         } else {
             Err(crate::error::YamcsError::WebSocket(
@@ -948,12 +948,12 @@ impl YamcsClient {
     /// ```
     pub async fn subscribe_alarms(
         &self,
-        request: &crate::types::alarms::SubscribeAlarmsRequest,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::types::alarms::Alarm>> {
+        request: &crate::pb::yamcs::protobuf::alarms::SubscribeAlarmsRequest,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::alarms::AlarmData>> {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
             client
-                .subscribe("alarms", serde_json::to_value(request)?)
+                .subscribe("alarms", request.clone())
                 .await
         } else {
             Err(crate::error::YamcsError::WebSocket(
@@ -986,12 +986,12 @@ impl YamcsClient {
     /// ```
     pub async fn subscribe_global_alarm_status(
         &self,
-        request: &crate::types::alarms::SubscribeGlobalAlarmStatusRequest,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::types::alarms::GlobalAlarmStatus>> {
+        request: &crate::pb::yamcs::protobuf::alarms::SubscribeGlobalStatusRequest,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<crate::pb::yamcs::protobuf::alarms::GlobalAlarmStatus>> {
         let ws = self.ws_client.lock().await;
         if let Some(client) = ws.as_ref() {
             client
-                .subscribe("global-alarm-status", serde_json::to_value(request)?)
+                .subscribe("global-alarm-status", request.clone())
                 .await
         } else {
             Err(crate::error::YamcsError::WebSocket(

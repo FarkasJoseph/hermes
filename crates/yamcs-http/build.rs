@@ -7,12 +7,16 @@ fn main() -> Result<()> {
     let mut config = prost_build::Config::new();
     // Emits the nested module tree, so lib.rs pulls it in with a single include!
     config.include_file("mod.rs");
+    // Emits prost::Name, so the websocket Any envelope resolves by type without hand-kept strings.
+    config.enable_type_names();
     config.compile_protos(
         &[
             "../../proto/yamcs/api/annotations.proto",
             "../../proto/yamcs/api/exception.proto",
             "../../proto/yamcs/api/httpbody.proto",
             "../../proto/yamcs/api/websocket.proto",
+            "../../proto/yamcs/protobuf/alarms/alarms.proto",
+            "../../proto/yamcs/protobuf/alarms/alarms_service.proto",
             "../../proto/yamcs/protobuf/events/events.proto",
             "../../proto/yamcs/protobuf/events/events_service.proto",
             "../../proto/yamcs/protobuf/mdb/mdb.proto",

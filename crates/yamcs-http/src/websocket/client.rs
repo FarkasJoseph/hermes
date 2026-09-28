@@ -1,63 +1,22 @@
 use crate::error::{Result, YamcsError};
+use crate::pb::yamcs::api::{CancelOptions, ClientMessage, Reply, ServerMessage};
 use crate::websocket::subscription::Subscription;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use prost::{Message as ProstMessage, Name};
+use prost_types::Any;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, trace};
 use url::Url;
 
-/// Client message sent to YAMCS WebSocket
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientMessage {
-    #[serde(rename = "type")]
-    pub message_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call: Option<u32>,
-    pub options: serde_json::Value,
-}
-
-/// Server message received from YAMCS WebSocket
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ServerMessage {
-    #[serde(rename = "type")]
-    pub message_type: String,
-    pub call: Option<u32>,
-    pub seq: Option<u32>,
-    pub data: serde_json::Value,
-}
-
 /// Internal structure to track pending requests awaiting replies
 struct PendingRequest {
-    tx: tokio::sync::oneshot::Sender<Result<(u32, serde_json::Value)>>,
-}
-
-// Builtin client and server messages to pass into options/data
-pub(crate) mod builtin {
-    use serde::Deserialize;
-
-    /// This message is sent by the server in response to a topic request.
-    /// Yamcs guarantees that this reply message is sent before any other
-    /// topic messages. The field reply_to contains a reference to the id
-    /// from the original client message. If there was an error in handling
-    /// the request, the reply will provide exception details. This is an
-    /// object that follows the same structure as exceptions on the regular
-    /// HTTP API.
-    #[derive(Debug, Clone, Deserialize)]
-    pub struct ServerReply {
-        #[serde(rename = "replyTo")]
-        pub reply_to: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub exception: Option<serde_json::Value>,
-    }
+    tx: tokio::sync::oneshot::Sender<Result<(u32, Any)>>,
 }
 
 /// WebSocket connection state
@@ -134,7 +93,17 @@ impl WebSocketClient {
         let ws_url = self.build_websocket_url()?;
 
         // Connect to WebSocket
-        let (ws_stream, _) = connect_async(&ws_url)
+        let mut request = ws_url
+            .into_client_request()
+            .map_err(|e| YamcsError::WebSocket(format!("Invalid websocket url: {}", e)))?;
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            "protobuf"
+                .parse()
+                .map_err(|e| YamcsError::WebSocket(format!("Invalid subprotocol: {}", e)))?,
+        );
+
+        let (ws_stream, _) = connect_async(request)
             .await
             .map_err(|e| YamcsError::WebSocket(format!("Connection failed: {}", e)))?;
 
@@ -160,8 +129,7 @@ impl WebSocketClient {
         let write_handle = tokio::spawn(async move {
             let mut write = write;
             while let Some(msg) = rx.recv().await {
-                let json = serde_json::to_string(&msg).unwrap();
-                if let Err(e) = write.send(Message::Text(json)).await {
+                if let Err(e) = write.send(Message::Binary(msg.encode_to_vec())).await {
                     tracing::error!("WebSocket send error: {}", e);
                     break;
                 }
@@ -178,34 +146,33 @@ impl WebSocketClient {
             let mut read = read;
             while let Some(result) = read.next().await {
                 match result {
-                    Ok(Message::Text(text)) => {
-                        match serde_json::from_str::<ServerMessage>(&text) {
+                    Ok(Message::Binary(bytes)) => {
+                        match ServerMessage::decode(&bytes[..]) {
                             Ok(msg) => {
                                 trace!(msg = ?msg, "server message");
 
                                 // Check if this is a reply message
-                                if msg.message_type == "reply" {
-                                    // Parse reply data to get reply_to field
-                                    if let Ok(reply) = serde_json::from_value::<builtin::ServerReply>(
-                                        msg.data.clone(),
-                                    ) {
+                                if msg.r#type == "reply" {
+                                    let reply = msg.data.as_ref().and_then(|d| d.to_msg::<Reply>().ok());
+                                    if let Some(reply) = reply {
                                         let mut pending = pending_requests.lock().await;
-                                        if let Some(request) = pending.remove(&reply.reply_to) {
+                                        if let Some(request) =
+                                            pending.remove(&(reply.reply_to as u32))
+                                        {
                                             let result = if let Some(exception) = reply.exception {
                                                 Err(YamcsError::WebSocket(format!(
                                                     "Request failed: {:?}",
                                                     exception
                                                 )))
                                             } else {
-                                                // Extract call ID from the message
-                                                let call_id = msg.call.unwrap_or(0);
-                                                Ok((call_id, msg.data))
+                                                Ok((msg.call as u32, msg.data.unwrap_or_default()))
                                             };
 
                                             let _ = request.tx.send(result);
                                         }
                                     }
-                                } else if let Some(call_id) = msg.call {
+                                } else {
+                                    let call_id = msg.call as u32;
                                     // Route message to appropriate subscription
                                     let subs = subscriptions.lock().await;
                                     if let Some(sub) = subs.get(&call_id) {
@@ -271,8 +238,8 @@ impl WebSocketClient {
         options: O,
     ) -> Result<mpsc::UnboundedReceiver<D>>
     where
-        O: Serialize,
-        D: for<'de> Deserialize<'de> + Send + 'static,
+        O: ProstMessage + Name,
+        D: ProstMessage + Default + Name + Send + 'static,
     {
         self.create_subscription(subscription_type, options).await
     }
@@ -283,8 +250,8 @@ impl WebSocketClient {
         options: O,
     ) -> Result<mpsc::UnboundedReceiver<D>>
     where
-        O: Serialize,
-        D: for<'de> Deserialize<'de> + Send + 'static,
+        O: ProstMessage + Name,
+        D: ProstMessage + Default + Name + Send + 'static,
     {
         // Ensure we're connected
         if self.state().await != ConnectionState::Connected {
@@ -300,20 +267,15 @@ impl WebSocketClient {
 
         // Create subscription with deserialization/send closure
         let sender_tx = tx.clone();
-        let subscription = Subscription::new(subscription_type.clone(), move |value| {
-            match serde_path_to_error::deserialize(value) {
+        let subscription =
+            Subscription::new(subscription_type.clone(), move |data| match data.to_msg::<D>() {
                 Ok(data) => {
                     let _ = sender_tx.send(data);
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "Failed to deserialize data {}: {}",
-                        get_type_name::<D>(Default::default()),
-                        e
-                    );
+                    tracing::error!("Failed to decode {}: {}", D::full_name(), e);
                 }
-            }
-        });
+            });
 
         let (call_id, _) = self.request(subscription_type, options).await?;
 
@@ -337,11 +299,13 @@ impl WebSocketClient {
             }
 
             // Send cancel message to server
+            let options = CancelOptions {
+                call: call_id as i32,
+            };
             let msg = ClientMessage {
-                message_type: "cancel".to_string(),
-                id: None,
-                call: None,
-                options: serde_json::json!({ "call": call_id }),
+                r#type: "cancel".to_string(),
+                options: Any::from_msg(&options).ok(),
+                ..Default::default()
             };
 
             let tx_guard = ws_tx.lock().await;
@@ -396,9 +360,9 @@ impl WebSocketClient {
         &self,
         request_type: impl Into<String>,
         options: O,
-    ) -> Result<(u32, serde_json::Value)>
+    ) -> Result<(u32, Any)>
     where
-        O: Serialize,
+        O: ProstMessage + Name,
     {
         // Ensure we're connected
         if self.state().await != ConnectionState::Connected {
@@ -425,16 +389,18 @@ impl WebSocketClient {
 
         // Send request message
         let msg = ClientMessage {
-            message_type: request_type.into(),
-            id: Some(request_id),
-            call: None,
-            options: serde_json::to_value(options).map_err(YamcsError::JsonSerialization)?,
+            r#type: request_type.into(),
+            id: request_id as i32,
+            options: Some(
+                Any::from_msg(&options)
+                    .map_err(|e| YamcsError::WebSocket(format!("Failed to encode options: {e}")))?,
+            ),
+            ..Default::default()
         };
 
         debug!(
             id = %request_id,
-            request_type = %msg.message_type,
-            options = ?msg.options,
+            request_type = %msg.r#type,
             "sending websocket request"
         );
         self.send_message(msg).await?;
@@ -504,11 +470,13 @@ impl WebSocketClient {
         options: O,
     ) -> Result<(u32, R)>
     where
-        O: Serialize,
-        R: for<'de> Deserialize<'de>,
+        O: ProstMessage + Name,
+        R: ProstMessage + Default + Name,
     {
-        let (call_id, value) = self.request(request_type, options).await?;
-        let data = serde_json::from_value(value).map_err(YamcsError::JsonSerialization)?;
+        let (call_id, any) = self.request(request_type, options).await?;
+        let data = any
+            .to_msg::<R>()
+            .map_err(|e| YamcsError::WebSocket(format!("Failed to decode reply: {e}")))?;
         Ok((call_id, data))
     }
 

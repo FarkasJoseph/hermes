@@ -45,10 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_message = ClientMessage {
         r#type: "parameters".to_string(),
         id: 1,
-        options: Some(prost_types::Any {
-            type_url: "/yamcs.protobuf.processing.SubscribeParametersRequest".to_string(),
-            value: subscribe.encode_to_vec(),
-        }),
+        options: Some(prost_types::Any::from_msg(&subscribe)?),
         ..Default::default()
     };
     socket
@@ -67,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("type={} type_url={}", server_message.r#type, data.type_url);
 
         if server_message.r#type == "parameters" {
-            let payload = SubscribeParametersData::decode(&data.value[..])?;
+            let payload: SubscribeParametersData = data.to_msg()?;
             for value in &payload.values {
                 let bytes = value
                     .eng_value

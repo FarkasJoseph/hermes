@@ -3,6 +3,10 @@ use hermes_pb::*;
 use prost_types::Timestamp;
 use std::collections::HashMap;
 use tonic::Status;
+use yamcs_http::pb::yamcs::protobuf::Value as YamcsValue;
+use yamcs_http::pb::yamcs::protobuf::event::EventSeverity;
+use yamcs_http::pb::yamcs::protobuf::events::Event as YamcsEvent;
+use yamcs_http::pb::yamcs::protobuf::value::Type as ValueType;
 
 /// Convert Hermes CommandValue to YAMCS IssueCommandOptions
 pub fn command_value_to_yamcs(
@@ -83,39 +87,43 @@ fn hermes_value_to_json(value: &Value) -> Result<serde_json::Value, Status> {
 
 /// Convert YAMCS Event to Hermes SourcedEvent
 pub fn yamcs_event_to_hermes(
-    yamcs_event: &yamcs_http::types::events::Event,
+    yamcs_event: &YamcsEvent,
     filter: &BusFilter,
 ) -> Result<Option<SourcedEvent>, Status> {
+    let source = yamcs_event.source.clone().unwrap_or_default();
+    let event_type = yamcs_event.r#type.clone().unwrap_or_default();
+
     // Apply source filter
-    if !filter.source.is_empty() && filter.source != yamcs_event.source {
+    if !filter.source.is_empty() && filter.source != source {
         return Ok(None);
     }
 
     // Apply name filter (match against event type)
-    if !filter.names.is_empty() && !filter.names.contains(&yamcs_event.event_type) {
+    if !filter.names.is_empty() && !filter.names.contains(&event_type) {
         return Ok(None);
     }
 
-    // Parse generation time
-    let time = parse_yamcs_time(&yamcs_event.generation_time)?;
+    // Yamcs sends a real timestamp here, so there is nothing to parse.
+    let time = Time {
+        unix: yamcs_event.generation_time,
+    };
 
     // Map YAMCS severity to Hermes severity
-    let severity = match yamcs_event.severity {
-        yamcs_http::types::events::EventSeverity::Info => EvrSeverity::EvrActivityLow,
-        yamcs_http::types::events::EventSeverity::Watch => EvrSeverity::EvrActivityHigh,
-        yamcs_http::types::events::EventSeverity::Warning => EvrSeverity::EvrWarningLow,
-        yamcs_http::types::events::EventSeverity::Distress => EvrSeverity::EvrWarningHigh,
-        yamcs_http::types::events::EventSeverity::Critical => EvrSeverity::EvrWarningHigh,
-        yamcs_http::types::events::EventSeverity::Severe => EvrSeverity::EvrFatal,
+    let severity = match yamcs_event.severity.and_then(|s| EventSeverity::try_from(s).ok()) {
+        Some(EventSeverity::Watch) => EvrSeverity::EvrActivityHigh,
+        Some(EventSeverity::Warning) | Some(EventSeverity::WarningNew) => EvrSeverity::EvrWarningLow,
+        Some(EventSeverity::Distress) | Some(EventSeverity::Critical) => EvrSeverity::EvrWarningHigh,
+        Some(EventSeverity::Severe) => EvrSeverity::EvrFatal,
         #[allow(deprecated)]
-        yamcs_http::types::events::EventSeverity::Error => EvrSeverity::EvrWarningLow,
+        Some(EventSeverity::Error) => EvrSeverity::EvrWarningLow,
+        Some(EventSeverity::Info) | None => EvrSeverity::EvrActivityLow,
     };
 
     // Build event reference
     let event_ref = EventRef {
-        id: yamcs_event.seq_number as i32,
-        name: yamcs_event.event_type.clone(),
-        component: yamcs_event.source.clone(),
+        id: yamcs_event.seq_number.unwrap_or_default(),
+        name: event_type,
+        component: source.clone(),
         severity: severity as i32,
         arguments: vec![],
         dictionary: String::new(),
@@ -123,28 +131,26 @@ pub fn yamcs_event_to_hermes(
 
     // Convert extra fields to tags
     let mut tags = HashMap::new();
-    if let Some(ref extra) = yamcs_event.extra {
-        for (key, val) in extra {
-            tags.insert(
-                key.clone(),
-                Value {
-                    value: Some(value::Value::S(val.clone())),
-                },
-            );
-        }
+    for (key, val) in &yamcs_event.extra {
+        tags.insert(
+            key.clone(),
+            Value {
+                value: Some(value::Value::S(val.clone())),
+            },
+        );
     }
 
     let event = Event {
         r#ref: Some(event_ref),
         time: Some(time),
-        message: yamcs_event.message.clone(),
+        message: yamcs_event.message.clone().unwrap_or_default(),
         args: vec![],
         tags,
     };
 
     let sourced_event = SourcedEvent {
         event: Some(event),
-        source: yamcs_event.source.clone(),
+        source,
         context: SourceContext::Realtime as i32,
     };
 
