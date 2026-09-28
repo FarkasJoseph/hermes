@@ -848,17 +848,15 @@ impl YamcsClient {
     /// # Example
     ///
     /// ```no_run
-    /// # use yamcs_http::{YamcsClient, types::monitoring::{SubscribeParametersRequest, SubscribeParametersAction, SubscribeParametersData}, types::common::NamedObjectId};
+    /// # use yamcs_http::YamcsClient;
+    /// # use yamcs_http::pb::yamcs::protobuf::NamedObjectId;
+    /// # use yamcs_http::pb::yamcs::protobuf::processing::SubscribeParametersRequest;
     /// # async fn example(client: &YamcsClient) -> Result<(), Box<dyn std::error::Error>> {
     /// let request = SubscribeParametersRequest {
-    ///     instance: "myinstance".to_string(),
-    ///     processor: "realtime".to_string(),
+    ///     instance: Some("myinstance".to_string()),
+    ///     processor: Some("realtime".to_string()),
     ///     id: vec![NamedObjectId { name: "/MySystem/MyParameter".to_string(), namespace: None }],
-    ///     abort_on_invalid: false,
-    ///     update_on_expiration: false,
-    ///     send_from_cache: true,
-    ///     max_bytes: None,
-    ///     action: SubscribeParametersAction::Replace,
+    ///     ..Default::default()
     /// };
     /// let mut rx = client.subscribe_parameters(&request).await?;
     /// while let Some(data) = rx.recv().await {
@@ -894,11 +892,12 @@ impl YamcsClient {
     /// # Example
     ///
     /// ```no_run
-    /// # use yamcs_http::{YamcsClient, types::events::{Event, SubscribeEventsRequest}};
+    /// # use yamcs_http::YamcsClient;
+    /// # use yamcs_http::pb::yamcs::protobuf::events::SubscribeEventsRequest;
     /// # async fn example(client: &YamcsClient) -> Result<(), Box<dyn std::error::Error>> {
     /// let request = SubscribeEventsRequest {
-    ///     instance: "myinstance".to_string(),
-    ///     filter: None,
+    ///     instance: Some("myinstance".to_string()),
+    ///     ..Default::default()
     /// };
     /// let mut rx = client.subscribe_events(&request).await?;
     /// while let Some(event) = rx.recv().await {
@@ -931,12 +930,13 @@ impl YamcsClient {
     /// # Example
     ///
     /// ```no_run
-    /// # use yamcs_http::{YamcsClient, types::alarms::{Alarm, SubscribeAlarmsRequest}};
+    /// # use yamcs_http::YamcsClient;
+    /// # use yamcs_http::pb::yamcs::protobuf::alarms::SubscribeAlarmsRequest;
     /// # async fn example(client: &YamcsClient) -> Result<(), Box<dyn std::error::Error>> {
     /// let request = SubscribeAlarmsRequest {
-    ///     instance: "myinstance".to_string(),
-    ///     processor: "realtime".to_string(),
-    ///     include_pending: true,
+    ///     instance: Some("myinstance".to_string()),
+    ///     processor: Some("realtime".to_string()),
+    ///     ..Default::default()
     /// };
     /// let mut rx = client.subscribe_alarms(&request).await?;
     /// while let Some(alarm) = rx.recv().await {
@@ -969,11 +969,12 @@ impl YamcsClient {
     /// # Example
     ///
     /// ```no_run
-    /// # use yamcs_http::{YamcsClient, types::alarms::{GlobalAlarmStatus, SubscribeGlobalAlarmStatusRequest}};
+    /// # use yamcs_http::YamcsClient;
+    /// # use yamcs_http::pb::yamcs::protobuf::alarms::SubscribeGlobalStatusRequest;
     /// # async fn example(client: &YamcsClient) -> Result<(), Box<dyn std::error::Error>> {
-    /// let request = SubscribeGlobalAlarmStatusRequest {
-    ///     instance: "myinstance".to_string(),
-    ///     processor: "realtime".to_string(),
+    /// let request = SubscribeGlobalStatusRequest {
+    ///     instance: Some("myinstance".to_string()),
+    ///     processor: Some("realtime".to_string()),
     /// };
     /// let mut rx = client.subscribe_global_alarm_status(&request).await?;
     /// while let Some(status) = rx.recv().await {

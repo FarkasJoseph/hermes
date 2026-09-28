@@ -345,16 +345,18 @@ impl WebSocketClient {
     ///
     /// ```no_run
     /// # use yamcs_http::websocket::WebSocketClient;
-    /// # use serde_json::json;
+    /// # use yamcs_http::pb::yamcs::protobuf::events::SubscribeEventsRequest;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = WebSocketClient::new("http://localhost:8090");
     /// client.connect().await?;
     ///
-    /// let (call_id, reply) = client.request("management", json!({
-    ///     "action": "getInfo"
-    /// })).await?;
+    /// let options = SubscribeEventsRequest {
+    ///     instance: Some("myinstance".to_string()),
+    ///     ..Default::default()
+    /// };
+    /// let (call_id, reply) = client.request("events", options).await?;
     ///
-    /// println!("Call ID: {}, Reply: {:?}", call_id, reply);
+    /// println!("Call ID: {}, Reply type: {}", call_id, reply.type_url);
     /// # Ok(())
     /// # }
     /// ```
@@ -448,21 +450,19 @@ impl WebSocketClient {
     ///
     /// ```no_run
     /// # use yamcs_http::websocket::WebSocketClient;
-    /// # use serde::{Deserialize, Serialize};
-    /// # #[derive(Serialize)]
-    /// # struct MyRequest { action: String }
-    /// # #[derive(Deserialize)]
-    /// # struct MyReply { result: String }
+    /// # use yamcs_http::pb::yamcs::api::Reply;
+    /// # use yamcs_http::pb::yamcs::protobuf::events::SubscribeEventsRequest;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = WebSocketClient::new("http://localhost:8090");
     /// client.connect().await?;
     ///
-    /// let (call_id, reply): (u32, MyReply) = client.request_typed(
-    ///     "management",
-    ///     MyRequest { action: "getInfo".to_string() }
-    /// ).await?;
+    /// let options = SubscribeEventsRequest {
+    ///     instance: Some("myinstance".to_string()),
+    ///     ..Default::default()
+    /// };
+    /// let (call_id, reply): (u32, Reply) = client.request_typed("events", options).await?;
     ///
-    /// println!("Call ID: {}, Result: {}", call_id, reply.result);
+    /// println!("Call ID: {}, replying to: {}", call_id, reply.reply_to);
     /// # Ok(())
     /// # }
     /// ```

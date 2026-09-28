@@ -15,7 +15,10 @@
 //!
 //! ```no_run
 //! use yamcs_http::websocket::WebSocketClient;
-//! use yamcs_http::types::monitoring::SubscribeParametersData;
+//! use yamcs_http::pb::yamcs::protobuf::NamedObjectId;
+//! use yamcs_http::pb::yamcs::protobuf::processing::{
+//!     SubscribeParametersData, SubscribeParametersRequest,
+//! };
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,14 +28,18 @@
 //!     ws_client.connect().await?;
 //!
 //!     // Subscribe to parameters - returns a channel receiver
-//!     let mut rx = ws_client.subscribe::<_, SubscribeParametersData>(
-//!         "parameters",
-//!         serde_json::json!({
-//!             "instance": "myproject",
-//!             "processor": "realtime",
-//!             "id": [{"name": "/MySystem/MyParameter"}]
-//!         })
-//!     ).await?;
+//!     let request = SubscribeParametersRequest {
+//!         instance: Some("myproject".to_string()),
+//!         processor: Some("realtime".to_string()),
+//!         id: vec![NamedObjectId {
+//!             name: "/MySystem/MyParameter".to_string(),
+//!             namespace: None,
+//!         }],
+//!         ..Default::default()
+//!     };
+//!     let mut rx = ws_client
+//!         .subscribe::<_, SubscribeParametersData>("parameters", request)
+//!         .await?;
 //!
 //!     // Receive updates from the channel
 //!     while let Some(data) = rx.recv().await {
