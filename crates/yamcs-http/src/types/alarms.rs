@@ -201,7 +201,7 @@ pub struct ClearAlarmOptions {
 }
 
 #[cfg(test)]
-mod json_shape_tests {
+mod tests {
     use super::*;
 
     /// An active EVENT alarm as returned by a live yamcs 5.13.5 server. Yamcs spells the

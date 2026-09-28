@@ -485,7 +485,7 @@ pub struct StreamCommandIndexOptions {
 }
 
 #[cfg(test)]
-mod json_shape_tests {
+mod tests {
     use super::*;
 
     /// Every field ParameterValue requires on this branch. #265 makes most of these
