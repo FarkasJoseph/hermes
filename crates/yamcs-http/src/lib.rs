@@ -84,7 +84,7 @@ pub mod error;
 pub mod http;
 pub mod types;
 
-/// Types generated from the .proto files Yamcs 5.13.5 ships in yamcs-api-5.13.5.jar.
+/// Types generated from the .proto files Yamcs ships in its api jar.
 pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 }

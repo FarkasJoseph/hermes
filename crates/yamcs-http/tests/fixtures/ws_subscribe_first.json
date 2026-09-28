@@ -1,0 +1,85 @@
+{
+  "@type": "/yamcs.protobuf.processing.SubscribeParametersData",
+  "mapping": {
+    "1": {
+      "name": "/YSS/ccsds-apid"
+    },
+    "2": {
+      "name": "/YSS/SIMULATOR/BatteryTemperature1"
+    },
+    "3": {
+      "name": "/YSS/SIMULATOR/BatteryVoltage1"
+    }
+  },
+  "values": [
+    {
+      "rawValue": {
+        "type": "UINT32",
+        "uint32Value": 1
+      },
+      "engValue": {
+        "type": "UINT32",
+        "uint32Value": 1
+      },
+      "acquisitionTime": "2026-09-28T20:27:46.772Z",
+      "generationTime": "2026-09-28T20:27:46.769Z",
+      "acquisitionStatus": "ACQUIRED",
+      "numericId": 1
+    },
+    {
+      "rawValue": {
+        "type": "UINT32",
+        "uint32Value": 46
+      },
+      "engValue": {
+        "type": "UINT32",
+        "uint32Value": 46
+      },
+      "acquisitionTime": "2026-09-28T20:27:46.573Z",
+      "generationTime": "2026-09-28T20:27:46.570Z",
+      "acquisitionStatus": "ACQUIRED",
+      "expireMillis": "13300",
+      "numericId": 2
+    },
+    {
+      "rawValue": {
+        "type": "UINT32",
+        "uint32Value": 28
+      },
+      "engValue": {
+        "type": "UINT32",
+        "uint32Value": 28
+      },
+      "acquisitionTime": "2026-09-28T20:27:46.573Z",
+      "generationTime": "2026-09-28T20:27:46.570Z",
+      "acquisitionStatus": "ACQUIRED",
+      "monitoringResult": "CRITICAL",
+      "rangeCondition": "HIGH",
+      "alarmRange": [
+        {
+          "level": "CRITICAL",
+          "minInclusive": 9.0,
+          "maxInclusive": 15.0
+        }
+      ],
+      "expireMillis": "13300",
+      "numericId": 3
+    }
+  ],
+  "info": {
+    "1": {
+      "parameter": "/YSS/ccsds-apid",
+      "dataSource": "TELEMETERED"
+    },
+    "2": {
+      "parameter": "/YSS/SIMULATOR/BatteryTemperature1",
+      "units": "C",
+      "dataSource": "TELEMETERED"
+    },
+    "3": {
+      "parameter": "/YSS/SIMULATOR/BatteryVoltage1",
+      "units": "V",
+      "dataSource": "TELEMETERED"
+    }
+  }
+}

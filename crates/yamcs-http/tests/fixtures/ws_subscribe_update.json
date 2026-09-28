@@ -1,0 +1,19 @@
+{
+  "@type": "/yamcs.protobuf.processing.SubscribeParametersData",
+  "values": [
+    {
+      "rawValue": {
+        "type": "UINT32",
+        "uint32Value": 1
+      },
+      "engValue": {
+        "type": "UINT32",
+        "uint32Value": 1
+      },
+      "acquisitionTime": "2026-09-28T20:27:46.972Z",
+      "generationTime": "2026-09-28T20:27:46.968Z",
+      "acquisitionStatus": "ACQUIRED",
+      "numericId": 1
+    }
+  ]
+}
