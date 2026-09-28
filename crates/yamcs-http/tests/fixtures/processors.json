@@ -1,0 +1,48 @@
+{
+  "processors": [{
+    "instance": "simulator",
+    "name": "realtime",
+    "type": "realtime",
+    "creator": "System",
+    "hasAlarms": true,
+    "hasCommanding": true,
+    "state": "RUNNING",
+    "services": [{
+      "instance": "simulator",
+      "name": "StreamTmPacketProvider",
+      "state": "RUNNING",
+      "className": "org.yamcs.StreamTmPacketProvider",
+      "processor": "realtime"
+    }, {
+      "instance": "simulator",
+      "name": "StreamTcCommandReleaser",
+      "state": "RUNNING",
+      "className": "org.yamcs.StreamTcCommandReleaser",
+      "processor": "realtime"
+    }, {
+      "instance": "simulator",
+      "name": "StreamParameterProvider",
+      "state": "RUNNING",
+      "className": "org.yamcs.tctm.StreamParameterProvider",
+      "processor": "realtime"
+    }, {
+      "instance": "simulator",
+      "name": "AlgorithmManager",
+      "state": "RUNNING",
+      "className": "org.yamcs.algorithms.AlgorithmManager",
+      "processor": "realtime"
+    }, {
+      "instance": "simulator",
+      "name": "LocalParameterManager",
+      "state": "RUNNING",
+      "className": "org.yamcs.parameter.LocalParameterManager",
+      "processor": "realtime"
+    }],
+    "persistent": true,
+    "time": "2026-09-28T20:26:23.371Z",
+    "replay": false,
+    "checkCommandClearance": false,
+    "protected": true,
+    "overrideAlgorithmsEnabled": false
+  }]
+}

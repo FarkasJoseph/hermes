@@ -1,0 +1,40 @@
+{
+  "event": [{
+    "source": "User",
+    "generationTime": "2026-09-28T20:26:38.434Z",
+    "receptionTime": "2026-09-28T20:26:38.434Z",
+    "seqNumber": 1,
+    "type": "FIXTURE",
+    "message": "fixture capture 2",
+    "severity": "INFO",
+    "createdBy": "guest"
+  }, {
+    "source": "User",
+    "generationTime": "2026-09-28T20:26:38.369Z",
+    "receptionTime": "2026-09-28T20:26:38.369Z",
+    "seqNumber": 0,
+    "type": "FIXTURE",
+    "message": "fixture capture 1",
+    "severity": "INFO",
+    "createdBy": "guest"
+  }],
+  "events": [{
+    "source": "User",
+    "generationTime": "2026-09-28T20:26:38.434Z",
+    "receptionTime": "2026-09-28T20:26:38.434Z",
+    "seqNumber": 1,
+    "type": "FIXTURE",
+    "message": "fixture capture 2",
+    "severity": "INFO",
+    "createdBy": "guest"
+  }, {
+    "source": "User",
+    "generationTime": "2026-09-28T20:26:38.369Z",
+    "receptionTime": "2026-09-28T20:26:38.369Z",
+    "seqNumber": 0,
+    "type": "FIXTURE",
+    "message": "fixture capture 1",
+    "severity": "INFO",
+    "createdBy": "guest"
+  }]
+}

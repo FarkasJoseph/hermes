@@ -1,0 +1,15 @@
+{
+  "totalSize": 3,
+  "spaceSystems": ["/TSE", "/yamcs", "/YSS"],
+  "systems": [{
+    "name": "TSE",
+    "qualifiedName": "/TSE",
+    "shortDescription": "Test Support Equipment"
+  }, {
+    "name": "yamcs",
+    "qualifiedName": "/yamcs"
+  }, {
+    "name": "YSS",
+    "qualifiedName": "/YSS"
+  }]
+}

@@ -1,0 +1,13 @@
+{
+  "id": {
+    "name": "totalMemory",
+    "namespace": "/yamcs/376c22647e01/jvm"
+  },
+  "engValue": {
+    "type": "SINT64",
+    "sint64Value": "81920"
+  },
+  "acquisitionTime": "2026-09-28T20:26:22.110Z",
+  "generationTime": "2026-09-28T20:26:22.110Z",
+  "acquisitionStatus": "ACQUIRED"
+}

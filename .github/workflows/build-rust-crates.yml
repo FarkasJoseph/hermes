@@ -82,6 +82,9 @@ jobs:
       - name: Run integration tests (excluding yamcs-http)
         run: cargo test --workspace --all-features --test '*' --exclude yamcs-http --verbose
 
+      - name: Run yamcs-http offline tests
+        run: cargo test -p yamcs-http --all-features --test offline --verbose
+
       - name: Run doc tests
         run: cargo test --workspace --all-features --doc --verbose
 

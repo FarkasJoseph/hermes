@@ -1,0 +1,32 @@
+{
+  "parameters": [{
+    "name": "battery_voltage1",
+    "qualifiedName": "/TSE/simulator/battery_voltage1",
+    "type": {
+      "engType": "string",
+      "name": "string",
+      "qualifiedName": "/TSE/simulator/string"
+    },
+    "dataSource": "TELEMETERED"
+  }, {
+    "name": "battery_voltage2",
+    "qualifiedName": "/TSE/simulator/battery_voltage2",
+    "type": {
+      "engType": "string",
+      "name": "string",
+      "qualifiedName": "/TSE/simulator/string"
+    },
+    "dataSource": "TELEMETERED"
+  }, {
+    "name": "battery_voltage3",
+    "qualifiedName": "/TSE/simulator/battery_voltage3",
+    "type": {
+      "engType": "string",
+      "name": "string",
+      "qualifiedName": "/TSE/simulator/string"
+    },
+    "dataSource": "TELEMETERED"
+  }],
+  "continuationToken": "eyJuYW1lIjoiL1RTRS9zaW11bGF0b3IvYmF0dGVyeV92b2x0YWdlMyIsInNwYWNlU3lzdGVtIjpmYWxzZX0",
+  "totalSize": 152
+}
