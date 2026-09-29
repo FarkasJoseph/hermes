@@ -690,25 +690,23 @@ impl Api for YamcsApiService {
                 {
                     // No specific names requested - subscribe to ALL parameters in this instance
                     match yamcs_client
-                        .get_parameters(
+                        .get_all_parameters(
                             &instance,
                             &yamcs_http::types::mdb::GetParametersOptions::default(),
                         )
                         .await
                     {
-                        Ok(params_page) => {
-                            if let Some(parameters) = params_page.parameters {
-                                parameters
-                                    .iter()
-                                    .map(|p| yamcs_http::types::common::NamedObjectId {
-                                        name: p.qualified_name.clone(),
-                                        namespace: None,
-                                    })
-                                    .collect()
-                            } else {
+                        Ok(parameters) => {
+                            if parameters.is_empty() {
                                 warn!(instance = %instance, "No parameters found");
-                                vec![]
                             }
+                            parameters
+                                .iter()
+                                .map(|p| yamcs_http::types::common::NamedObjectId {
+                                    name: p.qualified_name.clone(),
+                                    namespace: None,
+                                })
+                                .collect()
                         }
                         Err(e) => {
                             error!(error = %e, instance = %instance, "Failed to fetch parameters");
