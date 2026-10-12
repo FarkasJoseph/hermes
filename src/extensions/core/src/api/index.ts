@@ -209,7 +209,8 @@ export class VscodeApi implements Hermes.Api, YamcsParameterSource, YamcsEventSo
         }
 
         this.cleanup();
-        this.cancelActivate = new vscode.CancellationTokenSource();
+        const cancel = new vscode.CancellationTokenSource();
+        this.cancelActivate = cancel;
 
         this.primaryItem.show();
         this.secondaryItem.hide();
@@ -230,12 +231,30 @@ export class VscodeApi implements Hermes.Api, YamcsParameterSource, YamcsEventSo
 
         this.primaryItem.text = "$(sync~spin) Hermes: Connecting...";
 
-        this.currentApi = await provider.provideBackendApi(
-            newState,
-            this.context,
-            this.log,
-            this.cancelActivate.token
-        );
+        let api: Hermes.Api;
+        try {
+            api = await provider.provideBackendApi(
+                newState,
+                this.context,
+                this.log,
+                cancel.token
+            );
+        } catch (err) {
+            // We return without an error when a newer update has replaced cancelActivate. The
+            // hermes.host.set command, which calls us, answers an error with invalidate, and that
+            // cancels the newer connect too.
+            if (this.cancelActivate !== cancel) {
+                return;
+            }
+            throw err;
+        }
+        // We dispose a backend that arrives after a newer update has taken over. A cancelled connect can
+        // still succeed, since Offline.activate never reads its token.
+        if (this.cancelActivate !== cancel) {
+            api.dispose();
+            return;
+        }
+        this.currentApi = api;
 
         this.primaryItem.color = undefined;
         this.primaryItem.text = `$(${provider.icon}) Hermes: ${provider.title}`;
