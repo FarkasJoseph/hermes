@@ -136,9 +136,11 @@ export class VscodeApi implements Hermes.Api, YamcsParameterSource, YamcsEventSo
         if (this.currentApi) {
             this.log.info('Disposing old API connection');
             this.currentApi.dispose();
+            // We clear currentApi before firing, so a listener that calls allFsw right away gets no connections
+            this.currentApi = undefined;
+            // The next backend may be Offline mode, which never reports connections, so we report the old ones gone
+            this._onFswChange.fire([]);
         }
-
-        this.currentApi = undefined;
     }
 
     async exited() {
