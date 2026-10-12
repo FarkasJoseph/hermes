@@ -424,6 +424,18 @@ describe('YAMCS event source', () => {
     });
 });
 
+describe('YamcsClient.listInstances', () => {
+    test('lists nothing when the server has no instances', async () => {
+        const client = new YamcsClient('localhost:1');
+        // grpc-js decodes a reply without instances as an object with no instances field. The client's gRPC stub is
+        // private and readonly, so we swap it for a fake with Object.assign.
+        const reply = (_request: object, _options: object, done: (err: null, res: object) => void) => done(null, {});
+        Object.assign(client, { instances: { ListInstances: reply } });
+        expect(await client.listInstances()).toEqual([]);
+        client.close();
+    });
+});
+
 describe('YamcsClient.subscribeParameters', () => {
     // Subscribes a real YamcsClient whose two gRPC streams are fakes the test controls
     function subscribe() {
@@ -857,6 +869,18 @@ async function waitFor<T>(get: () => T | false | undefined, timeoutMs: number): 
         'FPrimeFilePacketFileSize', 'FPrimeFilePacketSeqIndex', 'FPrimeFilePacketSourcePath', 'FPrimeFilePacketType',
         'FPrimePacketId', 'FPrimeTime',
     ];
+
+    test('lists the server\'s instances with their states', async () => {
+        const client = new YamcsClient(address!);
+        try {
+            await client.waitForReady(5000);
+            const instances = await client.listInstances();
+            console.log(instances.map((i) => `${i.name} ${i.state}`).join(', '));
+            expect(instances).toContainEqual(expect.objectContaining({ name: instance, state: 'RUNNING' }));
+        } finally {
+            client.close();
+        }
+    });
 
     test('lists every TELEMETERED parameter across pages', async () => {
         const client = new YamcsClient(address!);
