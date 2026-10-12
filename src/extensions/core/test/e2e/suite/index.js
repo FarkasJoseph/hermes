@@ -116,6 +116,16 @@ exports.run = async function () {
         }
         step('offline and back');
 
+        // We send one CMD_NO_OP_STRING through YAMCS mode's flight software connection. YAMCS mode issues a command by
+        // the qualified name in its metadata, which getDictionary returns as JSON text, so we parse the metadata first.
+        const fsws = await core.api.allFsw();
+        result.fsws = fsws.map((f) => ({ id: f.id, type: f.type, dictionary: f.dictionary }));
+        const dictionary = await core.api.getDictionary(fsws[0].dictionary);
+        const proto = Object.values(dictionary.content[''].commands).find((c) => c.mnemonic === 'CMD_NO_OP_STRING');
+        const def = { ...proto, metadata: JSON.parse(proto.metadata) };
+        await fsws[0].sequence({ language: 'yamcs', commands: [{ def, args: [`hermes e2e ${Date.now()}`] }] });
+        step(`${def.metadata.qualifiedName} sent through the YAMCS connection`);
+
         // E2E_HOLD_MS keeps the window open that many milliseconds, to look at the table
         const hold = Number(process.env.E2E_HOLD_MS || 0);
         if (hold > 0) {
@@ -124,8 +134,8 @@ exports.run = async function () {
             await sleep(hold);
         }
 
-        // Connecting only lists the instance's parameters and never uses the processor. So with an unknown processor
-        // we connect fine and the subscription fails, which should put the status bar in its error state
+        // An unknown processor should put the status bar in its error state. Connecting never uses the processor,
+        // so we connect fine and the parameter subscription fails
         await vscode.commands.executeCommand('hermes.host.set', 'yamcs', { ...state, processor: 'no-such-processor' });
         await waitFor('error status', () => core.api.primaryItem.backgroundColor?.id === 'statusBarItem.errorBackground', 10000);
         result.errorStatus = { text: core.api.secondaryItem.text, tooltip: core.api.secondaryItem.tooltip };

@@ -2,9 +2,11 @@ import * as vscode from 'vscode';
 
 import * as Hermes from '@gov.nasa.jpl.hermes/api';
 import * as Rpc from '@gov.nasa.jpl.hermes/rpc';
+import type { CommandValue } from '@gov.nasa.jpl.hermes/sequence';
 import { BackendProvider, Settings } from '@gov.nasa.jpl.hermes/vscode';
 
 import { Offline } from './Offline';
+import { commandSent, yamcsArguments, yamcsDictionary } from './yamcsCommands';
 
 export type YamcsParameterHandler = (instance: string, values: Rpc.YamcsParameterValue[]) => void;
 
@@ -42,9 +44,10 @@ export function inTopLevelSpaceSystem(qualifiedName: string): boolean {
     return qualifiedName.split('/').length === 3;
 }
 
-// Telemetry and events straight from YAMCS through the yamcs-grpc plugin, named by YAMCS, so they
-// don't need a Hermes dictionary. Everything else behaves as in Offline mode, which has no flight
-// software connection and so no commands.
+// Telemetry and events straight from YAMCS, and commands to it, through the yamcs-grpc plugin.
+// Telemetry and events are named by YAMCS, so they don't need a Hermes dictionary. Commands go
+// through our one flight software connection, using a dictionary built from YAMCS's mission
+// database. Everything else behaves as in Offline mode.
 export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSource {
     private readonly parameters = new vscode.EventEmitter<Rpc.YamcsParameterValue[]>();
     // Handlers share one YAMCS subscription, opened for the first handler and cancelled when the last one is disposed
@@ -58,21 +61,35 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
     // Losing YAMCS ends the parameter and event subscriptions together, so we only exit the backend for the first one
     private exited = false;
 
+    private readonly fsw: Hermes.Fsw;
+    // YAMCS puts this in each command's id, so commands issued in the same millisecond get different ids
+    private sequenceNumber = 0;
+
     constructor(
         context: vscode.ExtensionContext,
         log: Hermes.Log,
         readonly client: Rpc.YamcsClient,
         readonly state: Settings.Yamcs,
         readonly names: readonly string[],
+        dictionaryId: string,
     ) {
         super(context, log);
+        this.fsw = {
+            id: `yamcs:${state.instance}`,
+            type: 'yamcs',
+            profileId: '',
+            dictionary: dictionaryId,
+            command: (value, token) => this.command(value, token),
+            sequence: (value, token) => this.sequence(value, token),
+        };
     }
 
     /**
      * Connects to the yamcs-grpc plugin at state.address. We wait up to 5 s for the
-     * plugin to answer, then list the instance's parameters, then load the workspace's
-     * dictionaries as Offline mode does. The parameter subscription itself opens later,
-     * when the first handler calls onYamcsParameters.
+     * plugin to answer, then list the instance's parameters and commands, then load the
+     * workspace's dictionaries as Offline mode does, plus one built from the commands.
+     * The parameter subscription itself opens later, when the first handler calls
+     * onYamcsParameters.
      */
     static async connect(
         state: Settings.Yamcs,
@@ -84,31 +101,28 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
 
         // If the user cancels while we wait on YAMCS, we reject right away rather than
         // waiting out the 5 s. Closing the client wouldn't do it, because grpc-js reopens
-        // the channel until waitForReady's deadline. So each wait below races this promise.
-        let onCancel: vscode.Disposable | undefined;
-        const cancelled = new Promise<never>((_, reject) => {
-            onCancel = token?.onCancellationRequested(() => reject('cancelled'));
-        });
-        // We don't race the last step, loading dictionaries, so a cancel during it rejects
-        // cancelled with nothing awaiting it. Catching here keeps Node from reporting that.
-        cancelled.catch(() => { });
-
+        // the channel until waitForReady's deadline.
         try {
-            await Promise.race([client.waitForReady(5000), cancelled]);
-            const all = await Promise.race([client.listTelemetered(state.instance), cancelled]);
+            await cancellable(client.waitForReady(5000), token);
+            const all = await cancellable(client.listTelemetered(state.instance), token);
             // Parameters directly in a top-level space system are packet header fields in fprime-yamcs, not channels
             const names = state.includeTopLevel ? all : all.filter((name) => !inTopLevelSpaceSystem(name));
             log.info(`Found ${all.length} TELEMETERED parameters in YAMCS instance ${state.instance}, subscribing to ${names.length}`);
 
-            const api = new Yamcs(context, log, client, state, names);
+            const commands = await cancellable(client.listCommands(state.instance), token);
+            log.info(`Found ${commands.length} commands in YAMCS instance ${state.instance}`);
+            const dictionary = yamcsDictionary(state.instance, commands);
+
+            const api = new Yamcs(context, log, client, state, names, dictionary.id!);
             await api._activate();
+            // This dictionary has to stay in memory, because a saved copy reloads its missing opcodes as 0. It has
+            // an id, so addDictionary doesn't save it to workspace storage.
+            await api.addDictionary(dictionary);
             return api;
         } catch (err) {
             // A cancel or any failure above ends here, and we close the client so its channel doesn't linger
             client.close();
             throw new Error(`Could not connect to YAMCS at ${state.address}: ${err}`, { cause: err });
-        } finally {
-            onCancel?.dispose();
         }
     }
 
@@ -187,6 +201,69 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
         }
     }
 
+    async allFsw(): Promise<Hermes.Fsw[]> {
+        return [this.fsw];
+    }
+
+    async getFsw(id: string): Promise<Hermes.Fsw> {
+        return id === this.fsw.id ? this.fsw : super.getFsw(id);
+    }
+
+    // We call each listener with our one flight software connection as soon as it subscribes. The
+    // connection never changes, so a listener would never hear of it otherwise.
+    onFswChange: vscode.Event<Hermes.Fsw[]> = (listener) => {
+        listener([this.fsw]);
+        return { dispose: () => { } };
+    };
+
+    /**
+     * Issues a command on state.processor by the qualified name in its metadata, then
+     * checks its history every 50 ms and resolves once YAMCS has sent it. We poll because
+     * SubscribeCommands streams every command on the processor, with no way to ask for
+     * one. We don't wait for the flight software to run it, since YAMCS learns that only
+     * from verifiers, which a mission database may not define.
+     *
+     * grpc-js can leave a call waiting for minutes on a dead connection, so we make each
+     * wait cancellable to let the user stop the cell.
+     */
+    private async command(value: CommandValue, token?: vscode.CancellationToken): Promise<boolean> {
+        const name = value.def.metadata?.qualifiedName;
+        if (!name) {
+            throw new Error(`${value.def.component}.${value.def.mnemonic} has no YAMCS qualified name. Select a dictionary built from YAMCS as this cell language's dictionary.`);
+        }
+
+        // We check for a stopped cell before issuing. Calling issueCommand sends the request at once,
+        // and cancellable only stops us waiting.
+        if (token?.isCancellationRequested) {
+            throw new Error('Cancelled');
+        }
+        const issued = this.client.issueCommand(this.state.instance, this.state.processor, name, yamcsArguments(value), this.sequenceNumber++);
+        try {
+            const id = await cancellable(issued, token).catch((err) => {
+                // grpc-js puts YAMCS's reason in details, without the status code in front
+                throw new Error(`Could not issue ${name}: ${err.details ?? err.message}`, { cause: err });
+            });
+            while (!commandSent(await cancellable(this.client.getCommand(this.state.instance, id), token))) {
+                await cancellable(delay(50), token);
+            }
+        } catch (err) {
+            if (token?.isCancellationRequested) {
+                // Stopping the cell doesn't take the command back from YAMCS, where it may wait in a blocked queue
+                throw new Error(`Cancelled before Hermes saw YAMCS send ${name}. YAMCS may already have sent it, or may send it later.`, { cause: err });
+            }
+            throw err;
+        }
+        return true;
+    }
+
+    // Issues a cell's commands one at a time, each once YAMCS has sent the one before
+    private async sequence(value: Hermes.CommandSequence, token?: vscode.CancellationToken): Promise<boolean> {
+        for (const cmd of value.commands) {
+            await this.command(cmd, token);
+        }
+        return true;
+    }
+
     dispose(): void {
         this.cancel?.();
         this.parameters.dispose();
@@ -200,7 +277,7 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
 export class YamcsBackendProvider implements BackendProvider<Settings.Yamcs> {
     type = "yamcs";
     title = "YAMCS";
-    description = "Telemetry and events straight from YAMCS";
+    description = "Telemetry, events and commands straight from YAMCS";
     detail = "Connect to a YAMCS server running the yamcs-grpc plugin";
     icon = "broadcast";
     priority = 30;
@@ -244,6 +321,21 @@ export class YamcsBackendProvider implements BackendProvider<Settings.Yamcs> {
         // Leave the tooltip alone, since VscodeApi.invalidate already put the error there
         showServer(item, state);
     }
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Waits for promise, but rejects as soon as token is cancelled
+function cancellable<T>(promise: Promise<T>, token?: vscode.CancellationToken): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const onCancel = token?.onCancellationRequested(() => reject(new Error('Cancelled')));
+        if (token?.isCancellationRequested) {
+            reject(new Error('Cancelled'));
+        }
+        promise.then(resolve, reject).finally(() => onCancel?.dispose());
+    });
 }
 
 function showServer(item: vscode.StatusBarItem, state: Settings.Yamcs) {

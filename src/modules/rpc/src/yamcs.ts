@@ -4,9 +4,16 @@ import * as protoLoader from '@grpc/proto-loader';
 import yamcsDescriptor from './proto/yamcs.json';
 import type { ProtoGrpcType } from './proto/yamcs/processing';
 import type { ProtoGrpcType as EventsProtoGrpcType } from './proto/yamcs/events_service';
+import type { ProtoGrpcType as CommandsProtoGrpcType } from './proto/yamcs/commands_service';
+import type { Value as ArgumentValue } from './proto/yamcs/google/protobuf/Value';
+import type { CommandHistoryEntry__Output } from './proto/yamcs/yamcs/protobuf/commanding/CommandHistoryEntry';
+import type { CommandsApiClient } from './proto/yamcs/yamcs/protobuf/commanding/CommandsApi';
+import type { IssueCommandResponse__Output } from './proto/yamcs/yamcs/protobuf/commanding/IssueCommandResponse';
 import type { EventsApiClient } from './proto/yamcs/yamcs/protobuf/events/EventsApi';
 import type { Event__Output } from './proto/yamcs/yamcs/protobuf/events/Event';
 import type { ListEventsResponse__Output } from './proto/yamcs/yamcs/protobuf/events/ListEventsResponse';
+import type { CommandInfo__Output } from './proto/yamcs/yamcs/protobuf/mdb/CommandInfo';
+import type { ListCommandsResponse__Output } from './proto/yamcs/yamcs/protobuf/mdb/ListCommandsResponse';
 import type { MdbApiClient } from './proto/yamcs/yamcs/protobuf/mdb/MdbApi';
 import type { ListParametersResponse__Output } from './proto/yamcs/yamcs/protobuf/mdb/ListParametersResponse';
 import type { ProcessingApiClient } from './proto/yamcs/yamcs/protobuf/processing/ProcessingApi';
@@ -18,6 +25,10 @@ export type { ParameterValue__Output as YamcsParameterValue } from './proto/yamc
 export type { Value__Output as YamcsValue } from './proto/yamcs/yamcs/protobuf/Value';
 export type { Timestamp__Output as YamcsTimestamp } from './proto/yamcs/google/protobuf/Timestamp';
 export type { Event__Output as YamcsEvent } from './proto/yamcs/yamcs/protobuf/events/Event';
+export type { CommandInfo__Output as YamcsCommandInfo } from './proto/yamcs/yamcs/protobuf/mdb/CommandInfo';
+export type { ArgumentTypeInfo__Output as YamcsArgumentTypeInfo } from './proto/yamcs/yamcs/protobuf/mdb/ArgumentTypeInfo';
+export type { Value as YamcsArgumentValue } from './proto/yamcs/google/protobuf/Value';
+export type { CommandHistoryEntry__Output as YamcsCommandHistoryEntry } from './proto/yamcs/yamcs/protobuf/commanding/CommandHistoryEntry';
 
 // 64-bit integers decode as strings so they stay exact, and enums as their names.
 // The generated types in ./proto/yamcs assume the same, so these options must match
@@ -26,7 +37,7 @@ const yamcsDefinition = protoLoader.fromJSON(yamcsDescriptor as any, {
     longs: String,
     enums: String,
 });
-const yamcsPackage = grpc.loadPackageDefinition(yamcsDefinition) as unknown as ProtoGrpcType & EventsProtoGrpcType;
+const yamcsPackage = grpc.loadPackageDefinition(yamcsDefinition) as unknown as ProtoGrpcType & EventsProtoGrpcType & CommandsProtoGrpcType;
 
 /**
  * Client for the YAMCS API that the yamcs-grpc plugin serves over gRPC.
@@ -35,6 +46,7 @@ export class YamcsClient {
     private readonly processing: ProcessingApiClient;
     private readonly mdb: MdbApiClient;
     private readonly events: EventsApiClient;
+    private readonly commands: CommandsApiClient;
 
     constructor(address: string) {
         const credentials = grpc.credentials.createInsecure();
@@ -44,11 +56,15 @@ export class YamcsClient {
             // more often than that.
             'grpc.keepalive_time_ms': 5 * 60 * 1000,
         });
-        // MdbApi and EventsApi share ProcessingApi's channel, so we only need to wait on and close processing.
+        // MdbApi, EventsApi and CommandsApi share ProcessingApi's channel, so we only need to wait on
+        // and close processing.
         this.mdb = new yamcsPackage.yamcs.protobuf.mdb.MdbApi(address, credentials, {
             channelOverride: this.processing.getChannel(),
         });
         this.events = new yamcsPackage.yamcs.protobuf.events.EventsApi(address, credentials, {
+            channelOverride: this.processing.getChannel(),
+        });
+        this.commands = new yamcsPackage.yamcs.protobuf.commanding.CommandsApi(address, credentials, {
             channelOverride: this.processing.getChannel(),
         });
     }
@@ -80,6 +96,24 @@ export class YamcsClient {
             next = page.continuationToken || undefined;
         } while (next);
         return names;
+    }
+
+    /**
+     * The commands in instance's mission database, without abstract commands, which
+     * can't be issued. We ask for details so a command's baseCommand, the command it
+     * builds on, comes back in full, not only as a name.
+     */
+    async listCommands(instance: string): Promise<CommandInfo__Output[]> {
+        const commands: CommandInfo__Output[] = [];
+        let next: string | undefined;
+        do {
+            const page = await new Promise<ListCommandsResponse__Output>((resolve, reject) => {
+                this.mdb.ListCommands({ instance, noAbstract: true, details: true, next }, (err, res) => err ? reject(err) : resolve(res!));
+            });
+            commands.push(...page.commands ?? []);
+            next = page.continuationToken || undefined;
+        } while (next);
+        return commands;
     }
 
     /**
@@ -208,6 +242,38 @@ export class YamcsClient {
         call.write({ instance });
 
         return () => call.cancel();
+    }
+
+    /**
+     * Issue a command by name on a processor. YAMCS checks the arguments
+     * against its mission database and replies once the command is queued, with
+     * the id of its command history entry.
+     *
+     * Pass a different sequenceNumber for each command. YAMCS builds the id
+     * from the time in milliseconds, the address we connect from and
+     * sequenceNumber. Two commands with the same id share one history entry.
+     */
+    async issueCommand(
+        instance: string,
+        processor: string,
+        name: string,
+        args: Record<string, ArgumentValue>,
+        sequenceNumber: number,
+    ): Promise<string> {
+        const res = await new Promise<IssueCommandResponse__Output>((resolve, reject) => {
+            this.commands.IssueCommand({ instance, processor, name, args: { fields: args }, sequenceNumber }, (err, res) => err ? reject(err) : resolve(res!));
+        });
+        return res.id!;
+    }
+
+    /**
+     * The command history entry with the given id, holding every attribute
+     * YAMCS has recorded for that command so far, such as whether it was sent.
+     */
+    getCommand(instance: string, id: string): Promise<CommandHistoryEntry__Output> {
+        return new Promise((resolve, reject) => {
+            this.commands.GetCommand({ instance, id }, (err, res) => err ? reject(err) : resolve(res!));
+        });
     }
 
     close() {
