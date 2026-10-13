@@ -1,0 +1,94 @@
+import * as vscode from 'vscode';
+
+import * as Hermes from '@gov.nasa.jpl.hermes/api';
+import { Def, Dictionary, Proto, Value } from '@gov.nasa.jpl.hermes/types';
+
+// Builds an F Prime dictionary from the one YAMCS mode builds for an instance that fprime-yamcs runs
+export function fprimeDictionary(yamcsDictionary: Proto.IDictionary): Proto.IDictionary | undefined {
+    // fprime-yamcs assigns each F Prime command's opcode to an argument called OpCode, so a command with no
+    // OpCode assignment isn't an F Prime command and we leave it out.
+    const commands = [...Dictionary.fromProto(yamcsDictionary).get('').getCommands()]
+        .filter((cmd) => cmd.metadata?.assignments?.OpCode !== undefined);
+    // If no command has an OpCode assignment, fprime-yamcs doesn't run this instance, so we build no dictionary
+    if (commands.length === 0) {
+        return undefined;
+    }
+
+    const out = new Dictionary({ name: `${yamcsDictionary.head?.name} (F Prime)`, type: 'fprime' });
+    for (const cmd of commands) {
+        // We name the command the way F Prime does, like CdhCore.cmdDisp.CMD_NO_OP. cmd.component is like
+        // /BigData_YamcsDeployment/CdhCore/cmdDisp, so we drop its leading slash and the deployment.
+        const component = cmd.component.split('/').slice(2).join('.');
+        out.get('').addCommand(`${component}.${cmd.mnemonic}`, {
+            // cmd's metadata has the qualified name, which YAMCS mode uses to issue the command
+            ...cmd,
+            component,
+            opcode: Number(cmd.metadata?.assignments?.OpCode),
+            arguments: cmd.arguments.map((arg) => ({ ...arg, type: fprimeType(arg.type) })),
+        });
+    }
+    return { ...out.toProto(), id: `${yamcsDictionary.id}:fprime` };
+}
+
+function fprimeType(type: Def.Type): Def.Type {
+    switch (type.kind) {
+        case Def.TypeKind.enum:
+            // fprime-yamcs makes F Prime's bool an enumeration called bool, labelled False and True.
+            // We turn it back into a boolean so cells keep writing true and false.
+            return type.name === 'bool' ? { kind: Def.TypeKind.boolean } : type;
+        case Def.TypeKind.array:
+            return { ...type, type: fprimeType(type.type) };
+        case Def.TypeKind.object:
+            return { ...type, fields: type.fields.map((field) => ({ ...field, type: fprimeType(field.type) })) };
+        default:
+            return type;
+    }
+}
+
+function yamcsValue(value: Value): Value {
+    if (typeof value === 'boolean') {
+        // We send a boolean as True or False, the labels of fprime-yamcs's bool enumeration. YAMCS
+        // refuses a protobuf boolean for that enumeration.
+        return value ? 'True' : 'False';
+    } else if (Array.isArray(value)) {
+        return value.map(yamcsValue);
+    } else if (typeof value === 'object' && value.constructor === Object) {
+        // Only a plain object is a struct. A 64-bit integer is also an object, a Long, which we send unchanged.
+        return Object.fromEntries(Object.entries(value).map(([name, member]) => [name, yamcsValue(member)]));
+    }
+    return value;
+}
+
+// Runs an F Prime cell's commands on YAMCS mode's connection
+export async function runOnYamcs(
+    fsw: Hermes.Fsw,
+    seq: Hermes.CommandSequence,
+    token: vscode.CancellationToken,
+): Promise<boolean> {
+    if (!fsw.command) {
+        throw new Error(`${fsw.id} can't run F Prime commands`);
+    }
+
+    for (const cmd of seq.commands) {
+        // We wait for the command's relative time tag to pass
+        await cancellable(delay(Number(cmd.metadata?.relativeTimeDelayMs ?? 0)), token);
+        // YAMCS mode's fsw.command returns once YAMCS has sent the command, not once the flight software has run it
+        await fsw.command({ ...cmd, args: cmd.args.map(yamcsValue) }, token);
+    }
+    return true;
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Waits for promise, but rejects as soon as token is cancelled
+function cancellable<T>(promise: Promise<T>, token: vscode.CancellationToken): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const onCancel = token.onCancellationRequested(() => reject(new Error('Cancelled')));
+        if (token.isCancellationRequested) {
+            reject(new Error('Cancelled'));
+        }
+        promise.then(resolve, reject).finally(() => onCancel.dispose());
+    });
+}
