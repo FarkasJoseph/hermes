@@ -171,9 +171,8 @@ export abstract class SequenceLanguage<Expr extends Seq.Expression> implements
 
         this.subscriptions = [
             this.dictionaryProvider.onDictionaryChanged(() => this.asyncReparse.fire()),
-            // We load the dictionaries that cells target again whenever a connection or a dictionary changes.
-            // Switching to YAMCS mode tells us about its connections, but not about the dictionaries it loaded while
-            // connecting.
+            // We load the dictionaries that cells target again whenever a connection or a dictionary changes. Hermes
+            // says a backend's connections are gone when it drops the backend, but says nothing about its dictionaries.
             this.dictionaryProvider.api.onFswChange(reloadTargetDictionaries),
             this.dictionaryProvider.api.onDictionaryChange(reloadTargetDictionaries),
             // A cell's metadata holds its target, so a change to it can change the cell's dictionary

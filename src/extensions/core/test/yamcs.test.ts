@@ -1140,9 +1140,10 @@ describe('YAMCS commands', () => {
 
         // A cell can parse before YAMCS mode has connected, for example when VS Code opens with the notebook
         await parse('targeted');
-        // Connecting has VS Code ask for tokens again, and the cell then parses with its instance's dictionary
+        // Connecting reports the new connections and then their dictionaries, and each has VS Code ask for tokens
+        // again. The cell then parses with its instance's dictionary.
         await api.update('yamcs', {});
-        expect(tokensChanged).toHaveBeenCalledTimes(1);
+        expect(tokensChanged).toHaveBeenCalledTimes(2);
         await parse('targeted');
         // Picking another instance changes the cell's metadata. The unchanged cell then parses again, once.
         target.fsw = 'yamcs:fprime-project';
@@ -1150,7 +1151,7 @@ describe('YAMCS commands', () => {
         const event: Partial<vscode.NotebookDocumentChangeEvent> = { cellChanges: [change as vscode.NotebookDocumentCellChange] };
         const [onNotebookChange] = jest.mocked(vscode.workspace.onDidChangeNotebookDocument).mock.lastCall!;
         onNotebookChange(event as vscode.NotebookDocumentChangeEvent);
-        expect(tokensChanged).toHaveBeenCalledTimes(2);
+        expect(tokensChanged).toHaveBeenCalledTimes(3);
         await parse('targeted');
         await parse('targeted');
         // A cell on Automatic uses the selected dictionary, and a cell whose instance has no dictionary uses none
@@ -1161,7 +1162,7 @@ describe('YAMCS commands', () => {
         const added = new Promise((resolve) => api.onDictionaryChange(resolve));
         await api.addDictionary({ ...new Dictionary({ name: 'stopped' }).toProto(), id: 'yamcs:stopped' });
         await added;
-        expect(tokensChanged).toHaveBeenCalledTimes(3);
+        expect(tokensChanged).toHaveBeenCalledTimes(4);
         await parse('targeted');
         expect(language.parsedWith).toEqual([undefined, 'other-instance', 'fprime-project', 'selected', undefined, 'stopped']);
         language.dispose();
