@@ -7,6 +7,8 @@ interface CellCommand {
     // The command's text in the cell, and the last character of its line, where we draw its status
     text: string;
     range: vscode.Range;
+    // When the cell finishes waiting to issue the command, unset if the cell has not waited
+    sendsAt?: number;
     // What the cell's connection has reported: when its first report came, and the command's newest state
     started?: number;
     state?: Hermes.CommandState;
@@ -92,12 +94,19 @@ class CellRun {
     }
 
     /**
+     * Receives how long the cell waits before it issues its next command
+     */
+    readonly wait = (ms: number) => {
+        this.current().sendsAt = Date.now() + ms;
+        this.update();
+    };
+
+    /**
      * Receives a command's state from the cell's connection. A connection that reports no state,
      * as in Local and Remote modes, never calls this, so the cell gets no statuses.
      */
     readonly report: Hermes.CommandStateHandler = (state) => {
-        // A cell's commands are issued one at a time and in order, so the state is for the first command that hasn't passed
-        const command = this.commands.find((c) => !c.state?.passed)!;
+        const command = this.current();
         command.started ??= Date.now();
         command.state = state;
         if (state.passed !== undefined) {
@@ -110,12 +119,14 @@ class CellRun {
      * Stops the redraw timer when the cell's run ends
      */
     stop() {
-        // The timer is unset when the cell's connection reported nothing, and then we draw no statuses
+        // The timer is unset when the cell has not waited and its connection reported nothing, and then we draw no statuses
         if (!this.timer) {
             return;
         }
         clearInterval(this.timer);
         for (const command of this.commands) {
+            // A command whose wait the cell was counting down shows not sent from here on
+            command.sendsAt = undefined;
             // A command that is still in flight ends here, without a result
             if (command.state && command.ended === undefined) {
                 this.end(command);
@@ -132,7 +143,12 @@ class CellRun {
         this.execution.appendOutput(new vscode.NotebookCellOutput([vscode.NotebookCellOutputItem.text(text, 'hermes.notebook/command')]));
     }
 
-    // Draws the statuses now and from then on ten times a second, so the time of a command in flight advances
+    // A cell's commands are issued one at a time and in order, so the cell is working on the first command that hasn't passed
+    private current(): CellCommand {
+        return this.commands.find((c) => !c.state?.passed)!;
+    }
+
+    // Draws the statuses now and from then on ten times a second, so the time of a wait or of a command in flight advances
     private update() {
         this.timer ??= setInterval(() => this.draw(), 100);
         this.draw();
@@ -140,7 +156,12 @@ class CellRun {
 
     private status(command: CellCommand): string {
         if (!command.state) {
-            return '○ not sent';
+            if (command.sendsAt === undefined) {
+                return '○ not sent';
+            }
+            // The wait can run out a moment before the command's first report comes, and then we show 0.0
+            const seconds = Math.max(command.sendsAt - Date.now(), 0) / 1000;
+            return `◷ sends in ${seconds.toFixed(1)} s`;
         }
         const { label, passed } = command.state;
         if (passed === false) {
