@@ -141,6 +141,10 @@ export function evrOutput(
     }
 }
 
+function severalYamcs(fsws: Hermes.Fsw[]): boolean {
+    return fsws.filter((f) => f.type === 'yamcs').length > 1;
+}
+
 export abstract class FswNotebookLanguageProvider implements NotebookLanguageProvider {
     didChangeCellStatusBarItems = new vscode.EventEmitter<void>();
     onDidChangeCellStatusBarItems = this.didChangeCellStatusBarItems.event;
@@ -182,7 +186,7 @@ export abstract class FswNotebookLanguageProvider implements NotebookLanguagePro
                         {
                             label: 'Automatic',
                             kind: vscode.QuickPickItemKind.Default,
-                            detail: 'Automatically selects first avaiable context when one becomes available',
+                            detail: 'Selects the first available connection, or none while several YAMCS instances are connected',
                         },
                         {
                             label: 'Custom',
@@ -286,12 +290,13 @@ export abstract class FswNotebookLanguageProvider implements NotebookLanguagePro
         return await fsw.sequence(seq, token, onState);
     }
 
-    private async getFsw(cell: vscode.NotebookCell, token?: vscode.CancellationToken): Promise<Hermes.Fsw | undefined> {
-        const allFsws = await this.validFsws(token);
-
+    private getFsw(cell: vscode.NotebookCell, allFsws: Hermes.Fsw[]): Hermes.Fsw | undefined {
         const fswName = cell.metadata.hermes?.fsw as string | undefined;
         if (fswName) {
             return allFsws.find(v => v.id === fswName);
+        } else if (severalYamcs(allFsws)) {
+            // YAMCS mode connects to every running instance, and the first may be the wrong vehicle, so Automatic picks none
+            return undefined;
         } else {
             return allFsws[0];
         }
@@ -303,7 +308,11 @@ export abstract class FswNotebookLanguageProvider implements NotebookLanguagePro
         token: vscode.CancellationToken,
     ): Promise<boolean> {
         const run = this.commandStatuses.run(cell, execution);
-        const fsw = await this.getFsw(cell, token);
+        const allFsws = await this.validFsws(token);
+        if (!cell.metadata.hermes?.fsw && severalYamcs(allFsws)) {
+            throw new Error("Several YAMCS instances are connected. Pick this cell's target from its status bar.");
+        }
+        const fsw = this.getFsw(cell, allFsws);
         if (!fsw) {
             throw new Error("No target FSW set on this cell (or connected)");
         }
@@ -350,7 +359,7 @@ export abstract class FswNotebookLanguageProvider implements NotebookLanguagePro
             ]
         };
 
-        const fsw = await this.getFsw(cell, token);
+        const fsw = this.getFsw(cell, await this.validFsws(token));
         const auto = cell.metadata.hermes?.fsw === undefined;
 
         if (fsw) {
