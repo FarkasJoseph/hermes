@@ -128,12 +128,12 @@ verifiers ends at `✓ Sent`. Once a cell shows its first status, each command i
 `○ not sent`. So does a command that Hermes has issued, if you stop the cell before YAMCS answers
 Hermes about that command. YAMCS may still send it, as the cell's error says. If you stop the cell
 while a command is in flight, or the command's result is unknown, the command shows `?` with the
-newest step that passed. Hover over a status to see the steps YAMCS has recorded for the command,
-earliest first, with the time since the first step, and the command's qualified name. Steps that YAMCS
+newest step that passed. The statuses disappear when you edit the cell, run it again or close the
+notebook. When a command ends, the cell's output also gets a line with the command's text and its
+status, which the notebook file saves. Hover over that line to see the steps YAMCS has recorded for
+the command, earliest first, with each step's UTC time and the command's YAMCS id. Steps that YAMCS
 skipped or cancelled have no row. A verifier that ends the command when it passes has a row of its own
-only when it fails or times out. Otherwise the row `Completed` or `Failed` shows its result. The
-statuses disappear when you edit the cell, run it again or close the notebook. A command that passed
-also leaves a line in the cell's output, with the command's text and its status.
+only when it fails or times out. Otherwise the row `Completed` or `Failed` shows its result.
 
 F Prime cells run in YAMCS mode too, when fprime-yamcs runs the instance. The Hermes F Prime extension
 builds an F Prime dictionary from each instance's dictionary, listed as `<instance> (F Prime)`, and
