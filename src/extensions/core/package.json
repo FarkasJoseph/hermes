@@ -522,7 +522,8 @@
                 "displayName": "Hermes Event Renderer",
                 "entrypoint": "./out/evr-renderer.js",
                 "mimeTypes": [
-                    "hermes.notebook/evr"
+                    "hermes.notebook/evr",
+                    "hermes.notebook/command"
                 ],
                 "requiresMessaging": "optional"
             }

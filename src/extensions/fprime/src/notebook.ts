@@ -9,13 +9,20 @@ interface RawSeqNotebookHeader {
     metadata?: Record<string, any>;
 }
 
+// A cell's outputs, as a run leaves them: the cell's events, then an output for each command that ended
+function cellOutputs(evrs: string[], commands: string[]): vscode.NotebookCellOutput[] {
+    const output = (text: string, mime: string) => new vscode.NotebookCellOutput([
+        new vscode.NotebookCellOutputItem(new TextEncoder().encode(text), mime)
+    ]);
+    return [output(evrs.join('\n'), 'hermes.notebook/evr'), ...commands.map((text) => output(text, 'hermes.notebook/command'))];
+}
+
 export class FPrimeNotebookSerializer implements vscode.NotebookSerializer {
     async deserializeNotebook(
         content: Uint8Array,
         _token: vscode.CancellationToken
     ): Promise<vscode.NotebookData> {
         const contents = new TextDecoder().decode(content);
-        const encoder = new TextEncoder();
 
         const file = contents.split('\n');
 
@@ -25,6 +32,7 @@ export class FPrimeNotebookSerializer implements vscode.NotebookSerializer {
         let cell: vscode.NotebookCellData | undefined = undefined;
         const cells: vscode.NotebookCellData[] = [];
         let evrOutput: string[] = [];
+        let commandOutputs: string[] = [];
 
         for (const line of file) {
             if (line.startsWith(';?=')) { // cell markers
@@ -33,16 +41,12 @@ export class FPrimeNotebookSerializer implements vscode.NotebookSerializer {
                 const cellMetadata: RawSeqNotebookHeader = JSON.parse(line.substring(3));
 
                 if (cell && evrOutput) {
-                    // Push the currently acrued EVRs to the cell
-                    cell.outputs = [new vscode.NotebookCellOutput([
-                        new vscode.NotebookCellOutputItem(
-                            encoder.encode(evrOutput.join('\n')),
-                            'hermes.notebook/evr')
-                    ])];
+                    cell.outputs = cellOutputs(evrOutput, commandOutputs);
                     cells.push(cell);
                 }
 
                 evrOutput = [];
+                commandOutputs = [];
                 cell = new vscode.NotebookCellData(
                     cellMetadata.kind,
                     '',
@@ -61,6 +65,8 @@ export class FPrimeNotebookSerializer implements vscode.NotebookSerializer {
                 }
 
                 evrOutput.push(line.substring(3));
+            } else if (line.startsWith(';?c')) { // command outputs
+                commandOutputs.push(JSON.parse(line.substring(3)));
             } else { // code / content line
                 if (!cell) {
                     evrOutput = [];
@@ -88,14 +94,7 @@ export class FPrimeNotebookSerializer implements vscode.NotebookSerializer {
         }
 
         if (cell && evrOutput) {
-            cell.outputs = [
-                new vscode.NotebookCellOutput([
-                    new vscode.NotebookCellOutputItem(
-                        encoder.encode(evrOutput.join('\n')),
-                        'hermes.notebook/evr'
-                    )
-                ])
-            ];
+            cell.outputs = cellOutputs(evrOutput, commandOutputs);
         }
 
         if (cell) {
@@ -143,6 +142,9 @@ export class FPrimeNotebookSerializer implements vscode.NotebookSerializer {
                         for (const evr of evrs) {
                             contents.push(';?e ' + JSON.stringify(evr));
                         }
+                    } else if (item.mime === 'hermes.notebook/command') {
+                        // A command's output has several lines, so we save it as a JSON string, which fits on one line
+                        contents.push(';?c ' + JSON.stringify(decoder.decode(item.data)));
                     }
                 }
             }

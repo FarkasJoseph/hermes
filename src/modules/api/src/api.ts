@@ -29,7 +29,7 @@ export interface CommandSequence {
 export interface CommandState {
     // The command's newest step, such as Sent, or how the command ended
     label: string;
-    // What the connection has recorded for the command, as lines of text for a hover
+    // What the connection has recorded for the command, as lines of text
     detail: string;
     // Whether the command passed. Unset while the connection is working on the command, and
     // left unset when the connection can't tell.

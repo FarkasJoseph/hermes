@@ -100,12 +100,8 @@ class CellRun {
         const command = this.commands.find((c) => !c.state?.passed)!;
         command.started ??= Date.now();
         command.state = state;
-        if (state.passed) {
-            command.ended = Date.now();
-            // Editing the cell clears its statuses but not its output, so a command that passed also gets a line in
-            // the output. A command that didn't pass is named in the cell's error.
-            const line = `${command.text}  ${this.status(command)}`;
-            this.execution.appendOutput(new vscode.NotebookCellOutput([vscode.NotebookCellOutputItem.text(line)]));
+        if (state.passed !== undefined) {
+            this.end(command);
         }
         this.update();
     };
@@ -121,9 +117,19 @@ class CellRun {
         clearInterval(this.timer);
         for (const command of this.commands) {
             // A command that is still in flight ends here, without a result
-            command.ended ??= Date.now();
+            if (command.state && command.ended === undefined) {
+                this.end(command);
+            }
         }
         this.draw();
+    }
+
+    // Editing the cell clears its statuses but not its outputs, so each command that ends also gets an output. Its
+    // first line is the command's status, and the rest is what the connection recorded for the command.
+    private end(command: CellCommand) {
+        command.ended = Date.now();
+        const text = `${command.text}  ${this.status(command)}\n${command.state!.detail}`;
+        this.execution.appendOutput(new vscode.NotebookCellOutput([vscode.NotebookCellOutputItem.text(text, 'hermes.notebook/command')]));
     }
 
     // Draws the statuses now and from then on ten times a second, so the time of a command in flight advances
@@ -153,7 +159,6 @@ class CellRun {
         this.statuses.show(this.cell.document, this.commands.map((c) => ({
             range: c.range,
             renderOptions: { after: { contentText: this.status(c) } },
-            hoverMessage: c.state && new vscode.MarkdownString().appendCodeblock(c.state.detail),
         })));
     }
 }
