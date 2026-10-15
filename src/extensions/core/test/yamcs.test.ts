@@ -1174,18 +1174,19 @@ describe('YAMCS commands', () => {
         const offline = await Offline.activate({} as vscode.ExtensionContext, { debug: () => { }, info: () => { }, warn: () => { }, error: () => { } });
         const pick = jest.mocked(vscode.window.showQuickPick as (items: Promise<vscode.QuickPickItem[]>) => Thenable<undefined>)
             .mockResolvedValue(undefined);
-        const cell: Partial<vscode.NotebookCell> = { metadata: { hermes: { fsw: 'yamcs:stopped' } } };
+        const { cell, execution } = notebookCell();
+        const stopped = { ...cell, metadata: { hermes: { fsw: 'yamcs:stopped' } } };
         const { token } = tokenSource();
 
         const offered: vscode.QuickPickItem[][] = [];
         for (const api of [offline, yamcs]) {
             // A dictionary for the stopped instance, which has no connection in either mode
             await api.addDictionary(yamcsDictionary('stopped', [noOpString]));
-            const cells = new Cells('yamcs', (fsw) => fsw.type === 'yamcs', api);
-            mockCommands.get('hermes.notebook.yamcs.select')!(cell);
+            const cells = new Cells(api, []);
+            mockCommands.get('hermes.notebook.test.select')!(stopped);
             // The picker lists Automatic, Custom and a separator before the targets
             offered.push((await pick.mock.lastCall![0]).slice(3).map(({ label, description }) => ({ label, description })));
-            await expect(cells.execute(cell as vscode.NotebookCell, {} as vscode.NotebookCellExecution, token))
+            await expect(cells.execute(stopped, execution, token))
                 .rejects.toThrow('No target FSW set on this cell (or connected)');
             cells.dispose();
         }
