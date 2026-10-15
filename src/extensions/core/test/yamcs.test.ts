@@ -544,7 +544,8 @@ describe('YAMCS event source', () => {
     });
 
     test('a cell lists the events YAMCS raises while the cell runs, except ones whose F Prime severity the notebook settings turn off', async () => {
-        const { api, raise, listings } = await backend();
+        // Each event the test raises reaches both instances' subscriptions, and the cell lists only fprime-project's copy
+        const { api, raise, listings } = await backend(['fprime-project', 'other-instance']);
         // The test fires onFswChange itself, as Hermes does when YAMCS mode's connection is gone
         const connections = new vscode.EventEmitter<Hermes.Fsw[]>();
         jest.spyOn(api, 'onFswChange').mockImplementation(connections.event);
@@ -560,10 +561,9 @@ describe('YAMCS event source', () => {
         });
         // As the events panel does, a handler subscribes before any cell runs. The backend lists YAMCS's archive
         // when the backend's first handler subscribes, and holds live events back until it has sent the archived
-        // ones, so we answer with an empty archive.
+        // ones, so we answer each instance's listing with an empty archive.
         api.onYamcsEvents(() => { });
-        const [archive] = listings;
-        archive.resolve([]);
+        listings.forEach((listing) => listing.resolve([]));
         await settle();
 
         const { cell, execution, outputs } = notebookCell();

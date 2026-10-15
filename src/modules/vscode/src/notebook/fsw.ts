@@ -96,7 +96,11 @@ export function evrOutput(
         // YAMCS mode sends the newest events in YAMCS's archive when its first handler subscribes. The events panel
         // subscribes when Hermes starts, so a cell is never that handler, and subscribing here doesn't put the
         // archived events in the cell's list.
-        const listing = (api as Hermes.Api & YamcsEventSource).onYamcsEvents((_, events) => {
+        const listing = (api as Hermes.Api & YamcsEventSource).onYamcsEvents((instance, events) => {
+            // YAMCS mode sends the events of every instance it connected to, and a cell lists only its own instance's events
+            if (`yamcs:${instance}` !== fsw.id) {
+                return;
+            }
             const shown = events.map((event) => yamcsDisplayEvent(fsw.id, event)).filter((evr) => showEvr(evr.severity));
             if (shown.length) {
                 evrs.push(...shown.map((evr) => JSON.stringify(evr)));
