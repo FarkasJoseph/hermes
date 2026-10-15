@@ -525,7 +525,7 @@ describe('YAMCS event source', () => {
 
         // evrCommand is off, which hides events of severity COMMAND. opCodeDispatched's F Prime severity
         // is COMMAND and its YAMCS severity is INFO, which no setting hides.
-        const [events] = outputs();
+        const [[, events]] = outputs();
         const seqCountJumpRow = {
             time: 1790722468095,
             // The row has NaN here, which JSON writes as null
@@ -542,7 +542,7 @@ describe('YAMCS event source', () => {
         mockSettings['hermes.notebook.evrCommand'] = true;
         const evrCommandOn = notebookCell();
         await cells.execute(evrCommandOn.cell, evrCommandOn.execution, tokenSource().token);
-        const rows = evrCommandOn.outputs()[0].split('\n').map((row) => JSON.parse(row));
+        const rows = evrCommandOn.outputs()[0][1].split('\n').map((row) => JSON.parse(row));
         expect(rows).toMatchObject([seqCountJumpRow, { component: 'CdhCore.cmdDisp', name: 'OpCodeDispatched' }, seqCountJumpRow]);
 
         // A cell whose connection is gone, as it is while YAMCS mode reconnects, lists no event raised after that
@@ -553,7 +553,7 @@ describe('YAMCS event source', () => {
         });
         const disconnected = notebookCell();
         await cells.execute(disconnected.cell, disconnected.execution, tokenSource().token);
-        expect(disconnected.outputs()).toEqual(['']);
+        expect(disconnected.outputs()).toEqual([['hermes.notebook/evr', '']]);
         api.dispose();
     });
 });
