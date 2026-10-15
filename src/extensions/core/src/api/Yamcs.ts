@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 
 import * as Hermes from '@gov.nasa.jpl.hermes/api';
 import * as Rpc from '@gov.nasa.jpl.hermes/rpc';
@@ -73,6 +74,9 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
     private readonly fsws: Hermes.Fsw[];
     // YAMCS puts this in each command's id, so commands issued in the same millisecond get different ids
     private sequenceNumber = 0;
+    // YAMCS puts this in each command's id too. Without it YAMCS uses our IP address, which every window on one
+    // machine shares, so we send our hostname and the process id of this window's extension host.
+    private readonly origin = `${os.hostname()}:${process.pid}`;
 
     constructor(
         context: vscode.ExtensionContext,
@@ -246,7 +250,7 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
             throw new Error('Cancelled');
         }
         const verifiers: Verifier[] = value.def.metadata?.verifiers ?? [];
-        const issued = this.client.issueCommand(instance, this.state.processor, name, yamcsArguments(value), this.sequenceNumber++);
+        const issued = this.client.issueCommand(instance, this.state.processor, name, yamcsArguments(value), this.origin, this.sequenceNumber++);
         let sent = false;
         try {
             const id = await cancellable(issued, token).catch((err) => {
