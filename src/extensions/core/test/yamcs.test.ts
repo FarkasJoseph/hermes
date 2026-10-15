@@ -987,16 +987,16 @@ describe('YAMCS commands', () => {
         api.dispose();
     });
 
-    test('saves the commands so Offline mode builds the same dictionary, and removing that dictionary deletes them', async () => {
+    test('saves each instance\'s commands so Offline mode builds the same dictionary, and removing that dictionary deletes them', async () => {
         const context: Partial<vscode.ExtensionContext> = { storageUri: { path: '/storage' } as vscode.Uri };
         const { api } = await backend(context);
-        const built = await api.getDictionary('yamcs:fprime-project');
+        const built = await api.getDictionary('yamcs:other-instance');
         api.dispose();
 
         const offline = await Offline.activate(context as vscode.ExtensionContext, { debug: () => { }, info: () => { }, warn: () => { }, error: () => { } });
-        expect(await offline.getDictionary('yamcs:fprime-project')).toEqual(built);
-        await offline.removeDictionary('yamcs:fprime-project');
-        expect(mockFiles.size).toBe(0);
+        expect(await offline.getDictionary('yamcs:other-instance')).toEqual(built);
+        await offline.removeDictionary('yamcs:other-instance');
+        expect([...mockFiles.keys()]).toEqual(['/storage/fprime-project.yamcs-commands.pb']);
     });
 
     test('issues each command by its qualified name once the one before has completed', async () => {

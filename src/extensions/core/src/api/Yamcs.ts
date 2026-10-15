@@ -45,10 +45,11 @@ export function inTopLevelSpaceSystem(qualifiedName: string): boolean {
     return qualifiedName.split('/').length === 3;
 }
 
-// A running YAMCS instance, with the parameters we subscribe to and a dictionary built from its commands
+// A running YAMCS instance, with the parameters we subscribe to, its commands and a dictionary built from them
 interface Instance {
     name: string;
     parameters: readonly string[];
+    commands: Rpc.YamcsCommandInfo[];
     dictionary: Proto.IDictionary;
 }
 
@@ -95,8 +96,8 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
      * Connects to the yamcs-grpc plugin at state.address. We wait up to 5 s for the
      * plugin to answer, then list the running instances and each one's parameters and
      * commands, then load the workspace's dictionaries as Offline mode does, plus one
-     * built from each instance's commands. The parameter subscriptions open later, when
-     * the first handler calls onYamcsParameters.
+     * built from each instance's commands, then save each instance's commands. The
+     * parameter subscriptions open later, when the first handler calls onYamcsParameters.
      */
     static async connect(
         state: Settings.Yamcs,
@@ -121,6 +122,7 @@ export class Yamcs extends Offline implements YamcsParameterSource, YamcsEventSo
             await api._activate();
             for (const instance of instances) {
                 await api.addDictionary(instance.dictionary);
+                await api.saveYamcsCommands(instance.name, instance.commands);
             }
             return api;
         } catch (err) {
@@ -353,7 +355,7 @@ async function loadInstance(client: Rpc.YamcsClient, name: string, state: Settin
 
     const commands = await client.listCommands(name);
     log.info(`Found ${commands.length} commands in YAMCS instance ${name}`);
-    return { name, parameters, dictionary: yamcsDictionary(name, commands) };
+    return { name, parameters, commands, dictionary: yamcsDictionary(name, commands) };
 }
 
 function delay(ms: number): Promise<void> {
