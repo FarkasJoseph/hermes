@@ -2,6 +2,14 @@
     width: 100%;
 }
 
+/* A command's status, drawn like VS Code draws a text output */
+.command-status {
+    line-height: var(--notebook-cell-output-line-height);
+    font-family: var(--notebook-cell-output-font-family);
+    font-size: var(--notebook-cell-output-font-size);
+    white-space: pre;
+}
+
 table,
 tr {
     text-align: left;

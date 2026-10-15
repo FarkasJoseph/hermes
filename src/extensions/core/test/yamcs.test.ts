@@ -42,13 +42,6 @@ jest.mock('vscode', () => {
         // FswNotebookLanguageProvider and CommandStatuses call the entries below
         commands: { registerCommand: () => ({ dispose: () => { } }) },
         ThemeColor: class { },
-        MarkdownString: class {
-            value = '';
-            appendCodeblock(code: string) {
-                this.value = code;
-                return this;
-            }
-        },
         Range: class {
             readonly start: object;
             readonly end: object;
@@ -59,7 +52,7 @@ jest.mock('vscode', () => {
         },
         NotebookCellOutput: class { constructor(readonly items: unknown[]) { } },
         // As in VS Code, an output item holds its text as bytes
-        NotebookCellOutputItem: { text: (value: string) => ({ data: Buffer.from(value) }) },
+        NotebookCellOutputItem: { text: (value: string, mime: string) => ({ data: Buffer.from(value), mime }) },
     };
 });
 
@@ -126,7 +119,7 @@ function tokenSource() {
 }
 
 // A notebook cell with a command on each of its lines, in an editor that is visible. decorations gives what the
-// editor draws for each command, statuses gives only the text, and outputs gives the text of each of the cell's outputs.
+// editor draws for each command, statuses gives only the text, and outputs gives the type and text of each of the cell's outputs.
 function notebookCell(...lines: string[]) {
     const document: Partial<vscode.TextDocument> = {
         version: 1,
@@ -151,7 +144,7 @@ function notebookCell(...lines: string[]) {
         execution: execution as vscode.NotebookCellExecution,
         decorations,
         statuses: () => decorations().map((decoration) => decoration.renderOptions?.after?.contentText),
-        outputs: () => outputs.map((output) => Buffer.from(output.items[0].data).toString()),
+        outputs: () => outputs.map(({ items: [item] }) => [item.mime, Buffer.from(item.data).toString()]),
     };
 }
 
@@ -681,6 +674,7 @@ describe('argumentValue', () => {
 const attr = (name: string, value: string) => ({ name, value: { type: 'STRING' as const, stringValue: value } });
 const queued = [attr('Acknowledge_Queued_Status', 'OK'), attr('TransmissionConstraints_Status', 'NA'), attr('Acknowledge_Released_Status', 'OK')];
 const history = (...attrs: ReturnType<typeof attr>[]): YamcsCommandHistoryEntry => ({
+    id: '1792010844598-0:0:0:0:0:0:0:1-4',
     commandName: '/BigData_YamcsDeployment/CdhCore/cmdDisp/CMD_NO_OP_STRING',
     attr: attrs,
 });
@@ -778,28 +772,30 @@ describe('commandState', () => {
         expect(commandState(history(...at('CommandComplete', 'NOK', 0)), fprime).label).toBe('failed');
     });
 
-    test('lists the steps in time order, with the verdict in place of the verifiers that end the command', () => {
+    test('lists the steps in time order with their UTC times, and the verdict in place of the verifiers that end the command', () => {
         expect(commandState(waiting, fprime).detail).toBe([
-            '✓ Queued         +0 ms',
-            '✓ Released       +1 ms',
-            '✓ Sent           +19 ms',
+            '✓ Queued         2026-10-12T12:00:00.000Z',
+            '✓ Released       2026-10-12T12:00:00.001Z',
+            '✓ Sent           2026-10-12T12:00:00.019Z',
             '○ Dispatched     waiting',
             '○ Completed      waiting',
             '',
             name,
+            'id 1792010844598-0:0:0:0:0:0:0:1-4',
         ].join('\n'));
         expect(commandState(failed, fprime).detail).toBe([
-            '✓ Queued         +0 ms',
-            '✓ Released       +1 ms',
-            '✓ Sent           +14 ms',
-            '✓ Dispatched     +943 ms',
-            '✗ Failed         +946 ms   EXECUTION_ERROR',
+            '✓ Queued         2026-10-12T12:00:00.000Z',
+            '✓ Released       2026-10-12T12:00:00.001Z',
+            '✓ Sent           2026-10-12T12:00:00.014Z',
+            '✓ Dispatched     2026-10-12T12:00:00.943Z',
+            '✗ Failed         2026-10-12T12:00:00.946Z   EXECUTION_ERROR',
             '',
             name,
+            'id 1792010844598-0:0:0:0:0:0:0:1-4',
         ].join('\n'));
         // A verifier that ends the command when it passes gets a row of its own when it fails or times out
         const timedOut = history(...released, ...at('Verifier_Complete', 'TIMEOUT', 60001), ...at('Acknowledge_Sent', 'OK', 19));
-        expect(commandState(timedOut, one).detail).toContain('✗ Complete     +60.0 s   TIMEOUT');
+        expect(commandState(timedOut, one).detail).toContain('✗ Complete     2026-10-12T12:01:00.001Z   TIMEOUT');
         // A verifier without an onSuccess action doesn't end the command, so there is no verdict to wait for
         const accepted = history(...released, ...at('Verifier_Accepted', 'PENDING', 1), ...at('Acknowledge_Sent', 'OK', 19));
         expect(commandState(accepted, plain).detail).not.toContain('Completed');
@@ -968,7 +964,7 @@ describe('YAMCS commands', () => {
         api.dispose();
     });
 
-    test('draws each command\'s status after its line until the cell is edited, and keeps a line of output for a command that passed', async () => {
+    test('draws each command\'s status after its line until the cell is edited, and gives each command that ended an output', async () => {
         const { api, get } = await backend();
         // YAMCS completes the first command, and fails the second 5 s later. The first command's status keeps
         // the 0.0 s it took.
@@ -987,9 +983,12 @@ describe('YAMCS commands', () => {
         expect(statuses()).toEqual(['✓ completed · 0.0 s', '✗ failed · EXECUTION_ERROR', '○ not sent']);
         // Each status is drawn on the last character of its line
         expect(decorations().map((decoration) => decoration.range)).toEqual([0, 1, 2].map((line) => new vscode.Range(line, 4, line, 5)));
-        expect(decorations()[1].hoverMessage).toEqual(new vscode.MarkdownString().appendCodeblock(commandState(failed, []).detail));
-        // The cell's first output is its list of events
-        expect(outputs()).toEqual(['', 'CMD a  ✓ completed · 0.0 s']);
+        // The cell's first output is its list of events. A command's output is its status, then its steps.
+        expect(outputs()).toEqual([
+            ['hermes.notebook/evr', ''],
+            ['hermes.notebook/command', `CMD a  ✓ completed · 0.0 s\n${commandState(sentCommand({ Complete: 'OK' }, 'OK'), one).detail}`],
+            ['hermes.notebook/command', `CMD b  ✗ failed · EXECUTION_ERROR\n${commandState(failed, []).detail}`],
+        ]);
 
         // VS Code also fires this event when the cell's text has not changed, which leaves the statuses.
         // An edit clears them.
@@ -1015,7 +1014,7 @@ describe('YAMCS commands', () => {
     test('counts the seconds of a command in flight until the cell is stopped, and then shows ?', async () => {
         const { api, get } = await backend();
         get.mockResolvedValue(sentCommand({ Complete: 'PENDING' }));
-        const { cell, execution, decorations, statuses } = notebookCell('CMD a');
+        const { cell, execution, decorations, statuses, outputs } = notebookCell('CMD a');
         const now = jest.spyOn(Date, 'now').mockReturnValue(0);
         const { token, cancel } = tokenSource();
         const run = new Cells(api, [command(verified, ['a'])]).execute(cell, execution, token);
@@ -1029,6 +1028,10 @@ describe('YAMCS commands', () => {
         await expect(run).rejects.toThrow('YAMCS already sent it');
         // We check the statuses once the cell has stopped, so a failed check doesn't leave the cell polling
         expect([first, later, statuses()]).toEqual([['● Sent · 0.0 s'], ['● Sent · 1.5 s'], ['? Sent · 1.5 s']]);
+        expect(outputs()).toEqual([
+            ['hermes.notebook/evr', ''],
+            ['hermes.notebook/command', `CMD a  ? Sent · 1.5 s\n${commandState(sentCommand({ Complete: 'PENDING' }), one).detail}`],
+        ]);
         // Nothing is drawn after the run has ended
         const last = decorations();
         await new Promise((resolve) => setTimeout(resolve, 150));

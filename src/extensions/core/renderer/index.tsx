@@ -106,6 +106,13 @@ export const activate: ActivationFunction = (context) => {
 
     return {
         renderOutputItem(outputItem, element) {
+            if (outputItem.mime === 'hermes.notebook/command') {
+                // A command's output starts with its status, and we show the rest of the output when that line is hovered
+                const [status, ...detail] = outputItem.text().split('\n');
+                render(<div className="command-status" title={detail.join('\n')}>{status}</div>, element);
+                return;
+            }
+
             const lines = outputItem.text().trim();
 
             let evrs: DisplayEvent[];
