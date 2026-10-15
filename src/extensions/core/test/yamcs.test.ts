@@ -1038,7 +1038,7 @@ describe('YAMCS commands', () => {
     test('shows each cell its own target, listing the connections once', async () => {
         const { api } = await backend();
         const allFsw = jest.spyOn(api, 'allFsw');
-        const cells = new Cells('yamcs', (fsw) => fsw.type === 'yamcs', api);
+        const cells = new Cells(api, []);
         const { token } = tokenSource();
         const shown: string[] = [];
         for (const fsw of ['yamcs:fprime-project', 'yamcs:other-instance']) {
