@@ -162,7 +162,8 @@ function notebookCell(...lines: string[]) {
             output.items = [items].flat();
         },
     };
-    const cell: Partial<vscode.NotebookCell> = { metadata: {}, document: document as vscode.TextDocument };
+    // The cell targets the instance fprime-project, as a cell must while several instances are connected
+    const cell: Partial<vscode.NotebookCell> = { metadata: { hermes: { fsw: 'yamcs:fprime-project' } }, document: document as vscode.TextDocument };
     const decorations = () => setDecorations.mock.lastCall![1] as vscode.DecorationOptions[];
     return {
         cell: cell as vscode.NotebookCell,
@@ -962,11 +963,6 @@ describe('YAMCS commands', () => {
         return { api, fsw: (await api.allFsw())[0], issue, get };
     }
 
-    // A provider for YAMCS cells, whose cells hold no commands
-    class Cells extends FswNotebookLanguageProvider {
-        async *parse() { }
-    }
-
     test('offers one connection per running instance, with the dictionary built from its commands', async () => {
         const { api } = await backend();
         const fsws = await api.allFsw();
@@ -1026,13 +1022,14 @@ describe('YAMCS commands', () => {
 
     test('refuses to run a cell on Automatic while several instances are connected', async () => {
         const { api } = await backend();
-        const cells = new Cells('yamcs', (fsw) => fsw.type === 'yamcs', api);
-        const cell: Partial<vscode.NotebookCell> = { metadata: {} };
+        const cells = new Cells(api, []);
+        const { cell, execution } = notebookCell();
+        const automatic = { ...cell, metadata: {} };
         const { token } = tokenSource();
 
-        await expect(cells.execute(cell as vscode.NotebookCell, {} as vscode.NotebookCellExecution, token))
+        await expect(cells.execute(automatic, execution, token))
             .rejects.toThrow("Several YAMCS instances are connected. Pick this cell's target from its status bar.");
-        const [item] = await cells.provideCellStatusBarItems(cell as vscode.NotebookCell, token);
+        const [item] = await cells.provideCellStatusBarItems(automatic, token);
         expect(item.text).toBe('$(circle-large-outline)');
         cells.dispose();
         api.dispose();
