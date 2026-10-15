@@ -136,7 +136,8 @@ statuses disappear when you edit the cell, run it again or close the notebook. A
 also leaves a line in the cell's output, with the command's text and its status.
 
 F Prime cells run in YAMCS mode too, when fprime-yamcs runs the instance. The Hermes F Prime extension
-builds an F Prime dictionary from the first instance's dictionary, listed as `<instance> (F Prime)`.
+builds an F Prime dictionary from each instance's dictionary, listed as `<instance> (F Prime)`, and
+selects the first instance's.
 It names each command as F Prime does, for example `CdhCore.cmdDisp.CMD_NO_OP` for
 `/BigData_YamcsDeployment/CdhCore/cmdDisp/CMD_NO_OP`, and takes its opcode from fprime-yamcs's
 `OpCode` argument assignment. Each command waits out its relative time tag, then goes out as a YAMCS
